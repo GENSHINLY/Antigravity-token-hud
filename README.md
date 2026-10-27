@@ -154,3 +154,7 @@ py -3 token_hud.py --self-test
 - `path_detection_test`：验证 `auto_detect_antigravity_path()` 在空目录、自定义路径、直接指定 `transcript.jsonl`、`config.json` 配置及 `GEMINI_HOME` 环境变量下的探测优先级与有效性断言。
 - `theme_and_settings_test`：验证 `SettingsDialog` 子 Agent 管理区域隐藏、侧边栏过滤栏常驻隐藏、纯主 Agent 单卡片隔离、4 套主题预设联动、`QColorDialog` 拾色器色值应用、`QTimer` 周期与扫描 TTL 动态更新及无日志友好提示。
 - `drag_test` / `resize_test` / `splitter_test` / `dwm_info`：验证窗口拖拽、右下角大/小尺寸双向缩放字号自适应、双栏分隔条拖拽以及 Windows 11 DWM 圆角与 Mica 材质属性返回值。
+
+---
+
+> Built with Google Antigravity.
