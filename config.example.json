@@ -1,0 +1,14 @@
+{
+  "main_agent_path": "",
+  "sub_agents": [],
+  "poll_interval_ms": 1000,
+  "scan_ttl_sec": 2.5,
+  "theme": {
+    "preset": "Gruvbox Material",
+    "bg_color": "#141617",
+    "fg_color": "#D4BE98",
+    "accent_color": "#E78A4E",
+    "card_bg_color": "#1D2021",
+    "border_color": "#3C3836"
+  }
+}
