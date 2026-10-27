@@ -1,5 +1,8 @@
 # Token HUD
 
+[![Release](https://img.shields.io/github/v/release/GENSHINLY/Antigravity-token-hud?color=brightgreen)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 基于 PySide6 (Qt 6 单句柄 Alien Widgets 硬件加速渲染) 与 Windows 11 DWM API 实现的 **Antigravity 实时 Token 监控置顶悬浮窗**。开箱即用、自动检测 Antigravity 会话日志，支持 Win11 原生圆角与 Mica 材质及自定义主题，后台独立线程异步采集 JSONL 会话快照，UI 主线程零 I/O 阻塞。
 
 ---
