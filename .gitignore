@@ -16,10 +16,12 @@ __pycache__/
 venv/
 env/
 
-# Windows 与 C# 编译产物
+# Windows �?C# 编译产物
 *.exe
 *.dll
 *.pdb
+*.zip
+dist/
 bin/
 obj/
 
