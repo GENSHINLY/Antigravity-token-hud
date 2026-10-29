@@ -3,6 +3,7 @@ config.json
 token_hud_config.json
 token_hud_path.txt
 *.tmp
+deploy_local.ps1
 
 # 本地归档目录
 beta/
@@ -16,7 +17,7 @@ __pycache__/
 venv/
 env/
 
-# Windows �?C# 编译产物
+# Windows 与 C# 编译产物
 *.exe
 *.dll
 *.pdb

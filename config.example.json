@@ -9,6 +9,8 @@
     "fg_color": "#D4BE98",
     "accent_color": "#E78A4E",
     "card_bg_color": "#1D2021",
-    "border_color": "#3C3836"
+    "border_color": "#3C3836",
+    "opacity": 0.94,
+    "backdrop": "mica"
   }
 }
