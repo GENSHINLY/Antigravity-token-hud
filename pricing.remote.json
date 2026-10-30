@@ -1,0 +1,145 @@
+{
+  "version": "1.2.0",
+  "updated_at": "2026-10-29",
+  "usd_to_cny_rate": 7.25,
+  "pricing": {
+    "gemini-3.8-flash": {
+      "input": 0.15,
+      "cached": 0.0375,
+      "output": 0.6,
+      "thought": 3.5
+    },
+    "gemini-3.8-pro": {
+      "input": 1.25,
+      "cached": 0.3125,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gemini-4-argon": {
+      "input": 1.25,
+      "cached": 0.3125,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gemini-3.1-pro": {
+      "input": 1.25,
+      "cached": 0.3125,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gemini-3.1-flash": {
+      "input": 0.15,
+      "cached": 0.0375,
+      "output": 0.6,
+      "thought": 3.5
+    },
+    "gemini-2.5-pro": {
+      "input": 1.25,
+      "cached": 0.125,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gemini-2.5-flash": {
+      "input": 0.3,
+      "cached": 0.03,
+      "output": 2.5,
+      "thought": 2.5
+    },
+    "gemini-2.0-flash": {
+      "input": 0.1,
+      "cached": 0.025,
+      "output": 0.4,
+      "thought": 0.4
+    },
+    "gemini-1.5-pro": {
+      "input": 1.25,
+      "cached": 0.3125,
+      "output": 5.0,
+      "thought": 5.0
+    },
+    "gemini-1.5-flash": {
+      "input": 0.075,
+      "cached": 0.01875,
+      "output": 0.3,
+      "thought": 0.3
+    },
+    "claude-opus-4-6": {
+      "input": 15.0,
+      "cached": 1.5,
+      "output": 75.0,
+      "thought": 75.0
+    },
+    "claude-sonnet-4-6": {
+      "input": 3.0,
+      "cached": 0.3,
+      "output": 15.0,
+      "thought": 15.0
+    },
+    "claude-3.7-sonnet": {
+      "input": 3.0,
+      "cached": 0.3,
+      "output": 15.0,
+      "thought": 15.0
+    },
+    "claude-3.5-sonnet": {
+      "input": 3.0,
+      "cached": 0.3,
+      "output": 15.0,
+      "thought": 15.0
+    },
+    "claude-3.5-haiku": {
+      "input": 0.8,
+      "cached": 0.08,
+      "output": 4.0,
+      "thought": 4.0
+    },
+    "claude-3-opus": {
+      "input": 15.0,
+      "cached": 1.5,
+      "output": 75.0,
+      "thought": 75.0
+    },
+    "gpt-4o": {
+      "input": 2.5,
+      "cached": 1.25,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gpt-4o-mini": {
+      "input": 0.15,
+      "cached": 0.075,
+      "output": 0.6,
+      "thought": 0.6
+    },
+    "o1": {
+      "input": 15.0,
+      "cached": 7.5,
+      "output": 60.0,
+      "thought": 60.0
+    },
+    "o3-mini": {
+      "input": 1.1,
+      "cached": 0.55,
+      "output": 4.4,
+      "thought": 4.4
+    },
+    "deepseek-chat": {
+      "input": 0.27,
+      "cached": 0.07,
+      "output": 1.1,
+      "thought": 1.1
+    },
+    "deepseek-reasoner": {
+      "input": 0.55,
+      "cached": 0.14,
+      "output": 2.19,
+      "thought": 2.19
+    },
+    "default": {
+      "input": 3.0,
+      "cached": 0.3,
+      "output": 15.0,
+      "thought": 15.0
+    }
+  }
+}

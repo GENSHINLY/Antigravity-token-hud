@@ -1,3 +1,7 @@
+param(
+    [switch]$SyncToUserBin = $false
+)
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -37,7 +41,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Output "Built successfully: $localExe"
 
-if ($env:USERPROFILE) {
+if ($SyncToUserBin -and $env:USERPROFILE) {
     $userBinDir = Join-Path $env:USERPROFILE ".local\bin"
     $userBinExe = Join-Path $userBinDir "hud.exe"
     $userBinPathTxt = Join-Path $userBinDir "token_hud_path.txt"
@@ -49,4 +53,6 @@ if ($env:USERPROFILE) {
     Copy-Item -Path $localExe -Destination $userBinExe -Force
     Set-Content -Path $userBinPathTxt -Value $scriptPy -Encoding UTF8 -NoNewline
     Write-Output "Synced launcher to: $userBinExe"
+} else {
+    Write-Output "Global sync skipped (run with -SyncToUserBin to sync to ~/.local/bin)."
 }
