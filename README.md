@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/GENSHINLY/Antigravity-token-hud?color=brightgreen)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-基于 PySide6 (Qt 6 单句柄 Alien Widgets 硬件加速渲染) 与 Windows 11 DWM API 实现的 **Antigravity / Gemini CLI / Claude Code 多源实时 Token 监控置顶悬浮窗**。开箱即用、自动探测多 Agent 会话日志，支持 Win11 原生圆角、DWM 毛玻璃（Mica / Acrylic）与逐像素半透明自定义主题，后台独立线程异步增量采集 JSONL 会话快照，UI 主线程零 I/O 阻塞。
+基于 PySide6 (Qt 6 单句柄 Alien Widgets 硬件加速渲染) 与 Windows 11 DWM API 实现的 **Antigravity / Gemini CLI / Claude Code 多源实时 Token 监控置顶悬浮窗**。自动探测多 Agent 会话日志，支持 Win11 原生圆角、DWM 毛玻璃（Mica / Acrylic）与逐像素半透明自定义主题，后台独立线程异步增量采集 JSONL 会话快照，UI 主线程零 I/O 阻塞。
 
 <div align="center">
 
@@ -21,22 +21,22 @@
 3. **自适应待机退避与隐藏暂停重绘**：连续 30 秒无任何日志文件修改时，轮询周期自动退避至 `3000ms`，一旦检测到新写入立即恢复高速周期；当悬浮窗处于最小化或隐藏状态时自动暂停 UI 控件重绘（`_render_snapshot`），恢复显示时即时全量重绘。
 4. **跨天（00:00）零 I/O 内存归零**：跨越午夜 00:00 时直接在内存缓存中将所有会话的 `today_*` 计数与今日费用清零，无需重新读取磁盘上的全部历史 JSONL 文件。
 5. **Pricing Engine 模型官方定价与今日折合成本展示**：内置 `TokenPricingEngine`，支持 **Google Gemini**（1.5/2.0/2.5/3.x/4 Argon）、**Anthropic Claude**（3 Opus/3.5/3.7/4.6）、**OpenAI**（GPT-4o / GPT-4o mini / o1 / o3-mini）与 **DeepSeek**（DeepSeek-V3 `deepseek-chat` / DeepSeek-R1 `deepseek-reasoner`）四大体系主流模型官方每百万 Token 分维费率（未缓存输入、缓存命中、输出、思考）与自定义费率，在主卡片、顶部标题栏徽章及侧边栏会话行实时展示今日折合与单会话折合费用（USD / CNY）。
-6. **系统托盘常驻与 Win32 全局热键**：内置 `QSystemTrayIcon` 系统托盘图标与右键菜单（显示/隐藏、立即重新扫描、导出 CSV、设置、退出），并通过 Win32 `RegisterHotKey` 注册全局热键 `Ctrl+Alt+T` 一键唤起或隐藏悬浮窗。
-7. **每日 Token 消耗持久化归档与一键导出 CSV 报表**：自动将每日各 Agent 与模型的 Token 消耗及折算费用持久化归档至 `~/.gemini/token_hud_history.json`，支持从系统托盘、右键菜单或设置面板一键导出包含 `Date,Agent,Model,InputTokens,CachedTokens,OutputTokens,ThoughtTokens,TotalTokens,CostUSD` 的标准 CSV 报表。
+6. **系统托盘常驻与 Win32 全局热键**：内置 `QSystemTrayIcon` 系统托盘图标与右键菜单（显示/隐藏、立即重新扫描、导出 CSV、设置、退出），并通过 Win32 `RegisterHotKey` 注册全局热键 `Ctrl+Alt+T` 唤起或隐藏悬浮窗。
+7. **每日 Token 消耗持久化归档与导出 CSV 报表**：自动将每日各 Agent 与模型的 Token 消耗及折算费用持久化归档至 `~/.gemini/token_hud_history.json`，支持从系统托盘、右键菜单或设置面板导出包含 `Date,Agent,Model,InputTokens,CachedTokens,OutputTokens,ThoughtTokens,TotalTokens,CostUSD` 的标准 CSV 报表。
 
 ---
 
 ## 核心特性
 
-### 1. 多 Agent 路由与开箱即用自动探测
-- **主 Agent (Antigravity) 零配置探测**：启动后按优先级自动探测 Antigravity Brain 会话日志目录（自定义路径 -> `config.json` -> `$GEMINI_HOME/antigravity/brain` -> `~/.gemini/antigravity/brain`）。
-- **子 Agent 动态发现与混排**：基于插件化注册表（`PARSER_REGISTRY`）原生支持 **Gemini CLI** (`~/.gemini/tmp`, `~/.gemini/chats`) 与 **Claude Code** (`~/.claude/projects`)。设置面板支持「自动扫描」一键定位本机已有的子 Agent 日志源。无启用子 Agent 时自动保持单 Agent 极简视图。
-- **单日增量精准聚合**：按单步时间戳精准统计当天 00:00 之后的消耗增量，彻底解决跨天长会话累积历史数据污染今日统计的问题。
+### 1. 多 Agent 路由与自动探测
+- **主 Agent (Antigravity) 自动探测**：启动后按优先级自动探测 Antigravity Brain 会话日志目录（自定义路径 -> `config.json` -> `$GEMINI_HOME/antigravity/brain` -> `~/.gemini/antigravity/brain`）。
+- **子 Agent 动态发现与混排**：基于插件化注册表（`PARSER_REGISTRY`）支持 **Gemini CLI** (`~/.gemini/tmp`, `~/.gemini/chats`) 与 **Claude Code** (`~/.claude/projects`)。设置面板支持「自动扫描」定位本机已有的子 Agent 日志源。无启用子 Agent 时保持单 Agent 视图。
+- **单日增量聚合**：按单步时间戳统计当天 00:00 之后的消耗增量，跨天长会话不计入前日数据，避免历史数据影响今日统计。
 
 ### 2. Win11 原生圆角与 DWM 毛玻璃材质
 - **单句柄硬件加速架构**：全窗口仅顶层持有原生 Win32 `HWND`，内部子控件全部启用 Qt 6 Alien Widgets 硬件合成，消除多句柄闪烁与重排卡顿。
 - **DWM 客户区扩展与材质集成**：通过 `dwmapi.dll` 调用 `DwmExtendFrameIntoClientArea`，支持沉浸式暗色模式 (`DWMWA_USE_IMMERSIVE_DARK_MODE`)、系统级圆角 (`DWMWCP_ROUND`) 与 Mica / Acrylic / Mica Alt 材质，配合逐像素 Alpha 与整窗透明度，通透呈现桌面光影。
-- **双窗风格高度统一**：主悬浮窗与设置面板均采用无边框设计、自定义 34px 标题栏与平滑拖拽移动，数显区域无底色矩形色块。
+- **双窗风格统一**：主悬浮窗与设置面板均采用无边框设计、自定义 34px 标题栏与拖拽移动，数显区域无底色矩形色块。
 - **二维响应式防裁切字号**：支持右下角无级拖拽缩放与双栏比例调节，内部大号数字、2×2 指标网格（输入/缓存/输出/思考）及左侧会话列表行高与字号随宽高双向自适应缩放。
 
 ### 3. 自定义主题与实时热重载
@@ -46,7 +46,7 @@
   - `Catppuccin Mocha`（柔和粉彩暗色）
   - `纯黑 OLED`（纯黑底色低功耗对比）
 - **全量 HEX 与拾色器定制**：支持针对主背景 (`bg_color`)、主文字 (`fg_color`)、强调色 (`accent_color`)、卡片背景 (`card_bg_color`)、边框颜色 (`border_color`) 输入 `#RRGGBB` 色值或调用 `QColorDialog` 可视化拾色器。
-- **修改即生效（零确认/取消）**：在设置面板中切换主题、调整毛玻璃、修改路径或轮询频次，所有选项实时生效并同步持久化到本地配置文件，主界面与设置面板同屏联动刷新。
+- **修改即生效**：在设置面板中切换主题、调整毛玻璃、修改路径或轮询频次，所有选项实时生效并同步持久化到本地配置文件，主界面与设置面板联动刷新。
 
 ---
 
@@ -191,36 +191,36 @@ py -3 token_hud.py --interval 1000
 ### 3. 使用可视化【⚙ 设置】面板
 
 点击悬浮窗右上角的 `⚙` 按钮（或在右键菜单 / 系统托盘菜单中选择 `设置...`）打开配置窗口：
-1. **Agents 监控源**：支持主 Agent 路径验证，以及子 Agent 列表的新增、删除、状态即时探测与「自动扫描」。
-2. **外观与配色**：实时切换 4 套预设主题与毛玻璃材质（Mica/Acrylic），或点击色块旁 `[拾色]` 实时定制 HEX 色值。
-3. **性能与刷新**：实时调整轮询间隔与目录扫描缓存 TTL。
-4. **导出与关闭**：点击底部 `[导出历史为 CSV...]` 可一键导出历史统计报表；支持点击右上角 `✕`、底部 `[关闭]` 按钮或直接按键盘 `Esc` 键退出设置面板。
+1. **Agents 监控源**：支持主 Agent 路径验证，以及子 Agent 列表的新增、删除、状态探测与「自动扫描」。
+2. **外观与配色**：切换 4 套预设主题与毛玻璃材质（Mica/Acrylic），或点击色块旁 `[拾色]` 定制 HEX 色值。
+3. **性能与刷新**：调整轮询间隔与目录扫描缓存 TTL。
+4. **导出与关闭**：点击底部 `[导出历史为 CSV...]` 可导出历史统计报表；支持点击右上角 `✕`、底部 `[关闭]` 按钮或直接按键盘 `Esc` 键退出设置面板。
 
-### 4. 编译 C# 无黑框启动器 (`hud.exe`) 与快捷拉起
+### 4. 编译 C# 启动器 (`hud.exe`) 与快捷拉起
 
-项目提供基于 .NET Framework 原生 `csc.exe` 的零依赖无窗口启动器 `hud_launcher.cs`。执行以下脚本即可编译 `hud.exe` 并自动同步至 `$env:USERPROFILE\.local\bin\hud.exe`：
+项目提供基于 .NET Framework 原生 `csc.exe` 的启动器 `hud_launcher.cs`。执行以下脚本即可编译 `hud.exe` 并同步至 `$env:USERPROFILE\.local\bin\hud.exe`：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_launcher.ps1
 ```
 
 启动器特性：
-- **单实例唤醒**：若检测到 `AntigravityTokenHUDMutex` 已存在，自动将后台或最小化的 HUD 窗口恢复显示并激活置顶，不会重复启动进程。
-- **动态路径解析**：按 `同级目录 token_hud.py` -> `同级 token_hud_path.txt / config.json` -> `环境变量 TOKEN_HUD_PATH` -> `~/.gemini/token_hud_config.json` -> `编译期源码目录` 顺序自动查找脚本。
-- **`Win + R` 快捷拉起（推荐）**：将 `%USERPROFILE%\.local\bin` 加入系统 `PATH` 后，日常推荐直接按 `Win + R` 输入 `hud` 按需快捷拉起（或唤醒置顶）悬浮窗。
+- **单实例唤醒**：若检测到 `AntigravityTokenHUDMutex` 已存在，将后台或最小化的 HUD 窗口恢复显示并激活置顶，不重复启动进程。
+- **动态路径解析**：按 `同级目录 token_hud.py` -> `同级 token_hud_path.txt / config.json` -> `环境变量 TOKEN_HUD_PATH` -> `~/.gemini/token_hud_config.json` -> `编译期源码目录` 顺序查找脚本。
+- **快捷拉起**：将 `%USERPROFILE%\.local\bin` 加入系统 `PATH` 后，按 `Win + R` 输入 `hud` 拉起（或唤醒置顶）悬浮窗。
 
 ---
 
 ## 界面交互与系统集成快捷操作
 
-- **全局热键 (`Ctrl + Alt + T`)**：在任意窗口下按下 `Ctrl + Alt + T` 即可一键切换悬浮窗的显示与隐藏状态。
-- **系统托盘常驻**：最小化或隐藏窗口后程序继续在系统托盘常驻运行，左键单击/双击托盘图标可快速唤起窗口，右键托盘菜单支持「显示 / 隐藏悬浮窗」「立即重新扫描」「导出历史为 CSV...」「设置...」与「退出」。
-- **整窗拖拽**：按住顶部标题栏或卡片空白区域可任意拖拽窗口位置。
-- **右下角无级缩放**：拖拽窗口右下角斜纹手柄 (`ResizeGripWidget`) 可自由放大或缩小窗口尺寸，内部字号与布局实时自适应。
-- **双栏比例调节**：拖拽左栏历史列表与右栏统计卡片之间的纵向分隔条 (`SplitterHandleWidget`)，可在 `18% ~ 65%` 范围内无级调整左右栏宽度占比。
-- **千分位明细与折算费用悬停**：顶部标题栏徽章默认以紧凑格式（如 `12.5M ($1.28)`）展示今日累计 Token 与折算美元成本，鼠标悬停其上即可即时切换查看完整千分位精确数值与人民币折算费用。
-- **历史会话回看与筛选**：在左栏列表中点击任意会话即可在主卡片区域查看该对话的 Token 用量、本会话折合成本与细分指标；在启用子 Agent 时可通过顶部筛选按钮快速切换查看全部/主/子会话。
-- **右键快捷菜单**：在窗口任意位置单击右键呼出菜单，支持返回最新活跃会话、重置几何大小、导出历史为 CSV、打开设置、立即刷新、隐藏悬浮窗及关闭程序。
+- **全局热键 (`Ctrl + Alt + T`)**：在任意窗口下按下 `Ctrl + Alt + T` 切换悬浮窗的显示与隐藏状态。
+- **系统托盘常驻**：最小化或隐藏窗口后程序在系统托盘常驻运行，左键单击/双击托盘图标唤起窗口，右键托盘菜单支持「显示 / 隐藏悬浮窗」「立即重新扫描」「导出历史为 CSV...」「设置...」与「退出」。
+- **整窗拖拽**：按住顶部标题栏或卡片空白区域拖拽窗口位置。
+- **右下角无级缩放**：拖拽窗口右下角斜纹手柄 (`ResizeGripWidget`) 调整窗口尺寸，内部字号与布局自适应。
+- **双栏比例调节**：拖拽左栏历史列表与右栏统计卡片之间的纵向分隔条 (`SplitterHandleWidget`)，在 `18% ~ 65%` 范围内调整左右栏宽度占比。
+- **千分位明细与折算费用悬停**：顶部标题栏徽章默认以紧凑格式（如 `12.5M ($1.28)`）展示今日累计 Token 与折算美元成本，鼠标悬停其上切换查看数值与人民币折算费用。
+- **历史会话回看与筛选**：在左栏列表中点击任意会话即可在主卡片区域查看该对话的 Token 用量、本会话折合成本与细分指标；在启用子 Agent 时可通过顶部筛选按钮切换查看全部/主/子会话。
+- **右键菜单**：在窗口任意位置单击右键呼出菜单，支持返回最新活跃会话、重置几何大小、导出历史为 CSV、打开设置、立即刷新、隐藏悬浮窗及关闭程序。
 
 ---
 
