@@ -14,30 +14,26 @@
 
 ---
 
-## v1.3 核心更新亮点（视觉动效与灵动岛系统）
+## v1.3 更新（视觉动效与灵动岛）
 
-1. **统一中央动效调度架构（`AnimationCoordinator`）与高刷动态匹配（最高 240Hz+）**：由单一高精度定时器（`Qt.TimerType.PreciseTimer`）统一驱动全部过渡与循环任务，自动探测当前屏幕物理刷新率（如 60Hz、120Hz、144Hz、240Hz）并动态匹配帧间隔（最高支持 250 FPS）；无活跃动画任务或窗口最小化/隐藏时自动停止定时器，空闲期保持 0 FPS 与零 CPU 开销。
-2. **纯 Python 缓动与 `QPainter` 直绘原语**：内置 `lerp`、`lerp_color` 及数学缓动函数（`out_quart`、`out_back`、`in_out_cubic`、`sine_breath`），所有视觉过渡（侧边栏弹性展开/折叠、会话行 Hover 底色与选中指示条、状态指示灯 `StatusIndicatorWidget` 呼吸与涟漪）均采用 `QPainter` 直绘，不调用高频 `setStyleSheet` 或 `QGraphicsEffect`，规避 Win11 半透明 DWM 材质下的边缘黑框与文字模糊。
-3. **数字防抖平滑滚动（`AnimatedNumberLabel`）**：核心累计 Token 大字、缓存命中率及 2x2 网格细分指标数值变动时采用平滑滚动插值；动画启动前按目标文本锁定字号，防止插值过程中因数字位数变化引发字号抖动。
-4. **单步增量浮动反馈（`StepDeltaBadgeWidget`）**：会话单步产生 Token 净增量时，在总用量右侧与 2x2 细分指标网格右上角同步触发 `+xxxk` 增量徽章，按“快速弹出（0~18%）-> 高亮停留（18%~72%）-> 上浮消散（72%~100%）”三段式曲线完成反馈，同时对应 2x2 单元格触发边框脉冲高亮。
-5. **灵动岛折叠胶囊态（A+B 混合架构）**：支持点击顶栏折叠按钮或双击标题栏空白处在完整视图（默认 `740×330`）与迷你胶囊态（`260×34`）之间切换。过渡期间锁定外层窗口包围盒并通过 `QPainter` 裁剪与插值实现零撕裂缩放，进入胶囊态或过渡期间自动切换 DWM 圆角策略以消除 Win11 原生直角外框阴影。
-6. **思考态顺时针闭环连续流光**：Agent 处于 `running` 状态时，主卡片与灵动岛胶囊边框启用基于周长参数化映射的顺时针连续流光动效，光带沿圆角矩形或全圆角胶囊轨迹闭合流动，重启或更新周期时保留起始相位，无跳变与截断。
-7. **灵动岛展开防越界屏幕工作区碰撞修正**：从 `260×34` 胶囊态展开恢复完整窗口前，自动读取当前所在显示器的可用工作区（`availableGeometry`）并执行坐标夹紧修正，防止在屏幕边缘展开时窗口越界超出可视区域。
-8. **窗口形态与窗口坐标持久化恢复**：在配置中心新增 `window_mode`（`"full"` / `"island"`）、`window_x` 与 `window_y` 字段，拖拽移动、切换形态或正常退出程序时自动保存当前窗口形态与屏幕坐标，下次启动时按保存状态恢复。
-9. **灵动岛折叠态悬停 Peek 迷你预览浮层（`IslandPeekPopup`）**：在灵动岛折叠态下，鼠标悬停满 320ms 自动向下滑出无焦点半透明 2x2 细分指标预览抽屉（展示当前会话名称、输入/缓存/输出/思考四维指标与今日累计费用），鼠标移出胶囊与浮层区域 200ms 后自动上滑收回。
-10. **全局动效开关与即时无延时回退**：在 `config.json` 与设置面板中提供 `enable_animations` 全局开关，关闭后所有数值更新、状态切换与灵动岛折叠/展开均直接走无延时即时更新分支。
+- **统一动效调度**：`AnimationCoordinator` 用单一 `PreciseTimer` 驱动所有动画，按屏幕刷新率匹配帧间隔，无动画任务或窗口隐藏/最小化时停止计时器。
+- **`QPainter` 直绘**：侧边栏展开/折叠、会话行 Hover、状态灯呼吸与涟漪均直绘实现，不使用高频 `setStyleSheet` 或 `QGraphicsEffect`。
+- **数字平滑滚动与增量徽章**：总 Token、缓存命中率和 2x2 指标平滑滚动；单步新增 Token 时显示 `+xxxk` 徽章并触发对应单元格边框脉冲。
+- **灵动岛折叠态**：点击折叠按钮或双击标题栏，在完整视图（`740×330`）与胶囊态（`260×34`）之间切换；展开前按所在显示器 `availableGeometry` 夹紧坐标，防止越界。
+- **悬停 Peek**：胶囊态下悬停 320ms 弹出 `IslandPeekPopup`，显示当前会话的四维指标与今日费用，移出 200ms 后收回。
+- **运行态流光**：Agent 处于 `running` 时，主卡片与胶囊边框显示顺时针连续流光。
+- **配置**：新增 `enable_animations`（关闭后全部走即时更新）、`window_mode`、`window_x`、`window_y`；窗口形态与坐标在拖拽、切换和退出时保存。
 
 ---
 
-## v1.2 核心更新亮点
+## v1.2 更新（模块化与计费）
 
-1. **模块化解耦架构**：将核心逻辑拆分为 `hud_core/` 模块化包（`config` / `parsers` / `pricing` / `monitor` / `win32_dwm` / `ui_widgets` / `settings_dialog` / `hud_window` / `selftest`），`token_hud.py` 精简为薄入口门面并保持向下兼容导出。
-2. **Byte-Offset Tailing 增量日志文件读取**：记录每个 JSONL 会话文件的 `last_byte_offset`，通过 `seek(offset)` 仅解析新增行并累加至内存状态，消除每秒全量反序列化开销；文件截断或重写时自动回退全量重扫。
-3. **自适应待机退避与隐藏暂停重绘**：连续 30 秒无任何日志文件修改时，轮询周期自动退避至 `3000ms`，一旦检测到新写入立即恢复高速周期；当悬浮窗处于最小化或隐藏状态时自动暂停 UI 控件重绘（`_render_snapshot`），恢复显示时即时全量重绘。
-4. **跨天（00:00）零 I/O 内存归零**：跨越午夜 00:00 时直接在内存缓存中将所有会话的 `today_*` 计数与今日费用清零，无需重新读取磁盘上的全部历史 JSONL 文件。
-5. **Pricing Engine 模型官方定价与今日折合成本展示**：内置 `TokenPricingEngine`，支持 **Google Gemini**（1.5/2.0/2.5/3.x/4 Argon）、**Anthropic Claude**（3 Opus/3.5/3.7/4.6）、**OpenAI**（GPT-4o / GPT-4o mini / o1 / o3-mini）与 **DeepSeek**（DeepSeek-V3 `deepseek-chat` / DeepSeek-R1 `deepseek-reasoner`）四大体系主流模型官方每百万 Token 分维费率（未缓存输入、缓存命中、输出、思考）与自定义费率，在主卡片、顶部标题栏徽章及侧边栏会话行实时展示今日折合与单会话折合费用（USD / CNY）。
-6. **系统托盘常驻与 Win32 全局热键**：内置 `QSystemTrayIcon` 系统托盘图标与右键菜单（显示/隐藏、立即重新扫描、导出 CSV、设置、退出），并通过 Win32 `RegisterHotKey` 注册全局热键 `Ctrl+Alt+T` 唤起或隐藏悬浮窗。
-7. **每日 Token 消耗持久化归档与导出 CSV 报表**：自动将每日各 Agent 与模型的 Token 消耗及折算费用持久化归档至 `~/.gemini/token_hud_history.json`，支持从系统托盘、右键菜单或设置面板导出包含 `Date,Agent,Model,InputTokens,CachedTokens,OutputTokens,ThoughtTokens,TotalTokens,CostUSD` 的标准 CSV 报表。
+- **模块化**：核心逻辑拆为 `hud_core/` 包，`token_hud.py` 保留为入口并重导出公开符号。
+- **增量读取**：记录每个 JSONL 文件的 `last_byte_offset`，仅解析新增行；文件截断或重写时回退全量重扫。
+- **待机优化**：连续 30 秒无文件修改时轮询退避到 `3000ms`；窗口隐藏或最小化时暂停重绘；跨过 00:00 时在内存中清零 `today_*` 计数，不重读历史文件。
+- **Pricing Engine**：内置 Gemini、Claude、OpenAI、DeepSeek 常用模型的每百万 Token 费率，支持自定义覆盖，在主卡片、标题栏徽章和会话行显示折合费用（USD / CNY）。
+- **托盘与热键**：`QSystemTrayIcon` 托盘菜单；Win32 `RegisterHotKey` 注册全局热键 `Ctrl+Alt+T`。
+- **历史归档与导出**：每日按 Agent 和模型归档到 `~/.gemini/token_hud_history.json`，可导出 CSV。
 
 ---
 
@@ -106,7 +102,6 @@
   ],
   "poll_interval_ms": 1000,
   "scan_ttl_sec": 2.5,
-  "hotkey": "Ctrl+Alt+T",
   "enable_animations": true,
   "window_mode": "full",
   "window_x": null,
@@ -159,17 +154,16 @@
 | 字段路径 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `main_agent_path` | `string` | `""` | Antigravity 主 Agent 日志根目录。留空时自动按环境变量 `GEMINI_HOME` 与 `~/.gemini/antigravity/brain` 探测。 |
-| `sub_agents` | `list` | `[]` | 子 Agent 监控源列表，支持配置路径、解析器类型（`gemini_cli_session` / `claude_code_session`）及启用状态。 |
+| `sub_agents` | `list` | `[]` | 子 Agent 监控源列表，支持配置路径、解析器类型（`antigravity_transcript` / `gemini_cli_session` / `claude_code_session`）及启用状态。 |
 | `poll_interval_ms` | `int` | `1000` | 界面快照刷新间隔（毫秒），有效范围 `100` ~ `60000`（设置面板范围 `250` ~ `5000`）。30 秒无磁盘活动时自动退避至 `3000ms`。 |
 | `scan_ttl_sec` | `float` | `2.5` | 磁盘目录结构重扫缓存周期（秒），有效范围 `0.1` ~ `300.0`（设置面板范围 `1.0` ~ `10.0`）。 |
-| `hotkey` | `string` | `"Ctrl+Alt+T"` | 全局唤起/隐藏悬浮窗快捷键说明（Win32 `RegisterHotKey` 默认绑定 `Ctrl+Alt+T`）。 |
 | `enable_animations` | `bool` | `true` | 全局视觉动效开关。设为 `false` 时关闭平滑滚动、流光、涟漪与过渡动画，所有状态无延时即时更新。 |
 | `window_mode` | `string` | `"full"` | 窗口形态持久化状态，可选值为 `"full"`（`740×330` 完整视图）或 `"island"`（`260×34` 灵动岛胶囊态）。 |
 | `window_x` | `int \| null` | `null` | 窗口左上角屏幕 X 坐标。为 `null` 时启动默认定位于主屏幕右上角安全边距处；拖拽或退出时自动保存。 |
 | `window_y` | `int \| null` | `null` | 窗口左上角屏幕 Y 坐标。为 `null` 时启动默认定位于主屏幕右上角安全边距处；拖拽或退出时自动保存。 |
 | `auto_update_pricing` | `bool` | `true` | 启动时是否在后台异步拉取最新美元兑人民币汇率与远端模型价格表。 |
 | `proxy` | `string` | `""` | 在线更新汇率与价格表时使用的 HTTP/HTTPS 代理地址（如 `"127.0.0.1:7897"`），留空时按环境变量与系统代理自动探测。 |
-| `usd_to_cny_rate` | `float` | `7.25` | 美元兑人民币参考汇率（有效校验范围 `5.0` ~ `10.0`）。 |
+| `usd_to_cny_rate` | `float` | `7.25` | 美元兑人民币参考汇率（有效校验范围 `0.01` ~ `1000.0`）。 |
 | `pricing` | `object` | `{...}` | 可选的模型每百万 Token 自定义费率覆盖表（包含 `input` / `cached` / `output` / `thought` 单价）。 |
 | `theme.preset` | `string` | `"Gruvbox Material"` | 主题预设名称（`Gruvbox Material` / `Cyberpunk Dark` / `Catppuccin Mocha` / `纯黑 OLED`）。 |
 | `theme.bg_color` | `string` | `"#141617"` | 主窗口背景 HEX 色值。 |
