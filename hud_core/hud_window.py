@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QAction, QBrush, QColor, QConicalGradient, QFont, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .animations import get_global_animator, lerp, lerp_color, out_back, out_quart, sine_breath
 from .config import ConfigManager
 from .monitor import TokenMonitorCache, export_history_to_csv
 from .parsers import PARSER_REGISTRY, _truncate_session_name, _update_session_pricing
@@ -53,9 +54,14 @@ class _StartupPricingBridge(QObject):
 
     sync_finished = Signal(bool)
 from .ui_widgets import (
+    AnimatedNumberLabel,
+    IslandPeekPopup,
+    MetricCellWidget,
     ResizeGripWidget,
     SidebarRowWidget,
     SplitterHandleWidget,
+    StatusIndicatorWidget,
+    StepDeltaBadgeWidget,
     _CompatLabelAdapter,
     _CompatWidgetGeoAdapter,
     _HoverLabel,
@@ -70,11 +76,34 @@ from .win32_dwm import apply_win11_mica_and_rounded_corners, resolve_top_level_h
 
 
 class _SidebarFrame(QFrame):
-    """使用 QPainter 直接绘制侧边栏圆角背景与边框，避免对父容器调用 setStyleSheet 引发子行递归重抛光。"""
+    """使用 QPainter 直接绘制侧边栏圆角背景与边框，支持 Agent running 状态下的流光边框。"""
 
     def __init__(self, hud_window: "TokenHUDWindow", parent: QWidget | None = None):
         super().__init__(parent)
         self._hud = hud_window
+        self._glow_angle: float = 0.0
+        self._is_glowing: bool = False
+
+    def set_glowing(self, glowing: bool) -> None:
+        if self._is_glowing == glowing:
+            return
+        self._is_glowing = glowing
+        animator = get_global_animator()
+        key = f"frame_glow_{id(self)}"
+        if glowing and not animator.is_paused:
+            animator.start_loop(
+                key=key,
+                duration_ms=2500,
+                on_tick=self._on_glow_tick,
+            )
+        else:
+            animator.stop_loop(key)
+            self._glow_angle = 0.0
+            self.update()
+
+    def _on_glow_tick(self, phase: float) -> None:
+        self._glow_angle = phase * 360.0
+        self.update()
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
@@ -83,7 +112,23 @@ class _SidebarFrame(QFrame):
         border_color = getattr(self._hud, "_border_qcolor", QColor("#282828"))
         rect = self.rect().adjusted(0, 0, -1, -1)
         painter.setBrush(bg_color)
-        painter.setPen(QPen(border_color, 1))
+
+        if self._is_glowing and not get_global_animator().is_paused:
+            accent_hex = getattr(self._hud, "FG_ACCENT", "#E78A4E")
+            accent_col = QColor(accent_hex)
+            cx = rect.center().x()
+            cy = rect.center().y()
+            grad = QConicalGradient(cx, cy, self._glow_angle)
+            c_transparent = QColor(border_color)
+            c_transparent.setAlpha(60)
+            grad.setColorAt(0.0, accent_col)
+            grad.setColorAt(0.2, c_transparent)
+            grad.setColorAt(0.8, c_transparent)
+            grad.setColorAt(1.0, accent_col)
+            painter.setPen(QPen(QBrush(grad), 1.5))
+        else:
+            painter.setPen(QPen(border_color, 1))
+
         painter.drawRoundedRect(rect, 4, 4)
 
 
@@ -255,12 +300,52 @@ class TokenHUDWindow(QWidget):
         win_w, win_h = self.MIN_WIN_W, self.MIN_WIN_H
         pos_x = max(20, avail.right() - win_w - 28)
         pos_y = max(20, avail.top() + 36)
+        cfg_wx = self.config_mgr.get("window_x", None)
+        cfg_wy = self.config_mgr.get("window_y", None)
+        if isinstance(cfg_wx, int) and not isinstance(cfg_wx, bool) and isinstance(cfg_wy, int) and not isinstance(cfg_wy, bool):
+            screens = self._app.screens() if hasattr(self._app, "screens") else ([screen] if screen else [])
+            if any(s and s.geometry().contains(cfg_wx, cfg_wy) for s in screens):
+                pos_x, pos_y = cfg_wx, cfg_wy
         self._locked_win_w = win_w
         self._locked_win_h = win_h
         self.setGeometry(pos_x, pos_y, win_w, win_h)
 
+        self._is_island_mode: bool = False
+        self._is_morphing: bool = False
+        self._morph_rect: QRectF = QRectF()
+        self._morph_radius: float = 8.0
+        self._saved_full_geo: tuple[int, int] = (self.width(), self.height())
+        self._last_combined_running: bool = False
+        self._island_glow_angle: float = 0.0
+        self._last_tracked_context_key: tuple[Any, ...] | None = None
+        self._last_tracked_tokens: int = 0
+        self._is_island_hovered: bool = False
+        self._peek_hover_timer = QTimer(self)
+        self._peek_hover_timer.setSingleShot(True)
+        self._peek_hover_timer.setInterval(320)
+        self._peek_hover_timer.timeout.connect(self._on_peek_hover_timeout)
+        self._peek_hide_timer = QTimer(self)
+        self._peek_hide_timer.setSingleShot(True)
+        self._peek_hide_timer.setInterval(200)
+        self._peek_hide_timer.timeout.connect(self._on_peek_hide_timeout)
+        self.peek_popup: IslandPeekPopup = IslandPeekPopup(self)
+
         self._build_ui()
         self.apply_theme()
+        # 同步显示器物理高刷新率
+        try:
+            scr = self.screen() if hasattr(self, "screen") else None
+            get_global_animator().sync_with_screen(scr)
+        except Exception:
+            pass
+        if not bool(self.config_mgr.get("enable_animations", True)):
+            get_global_animator().pause_animations(snap_to_target=True)
+        if str(self.config_mgr.get("window_mode", "full") or "full").strip().lower() == "island":
+            self.toggle_island_mode(instant=True)
+            if isinstance(cfg_wx, int) and not isinstance(cfg_wx, bool) and isinstance(cfg_wy, int) and not isinstance(cfg_wy, bool):
+                screens = self._app.screens() if hasattr(self._app, "screens") else ([screen] if screen else [])
+                if any(s and s.geometry().contains(cfg_wx, cfg_wy) for s in screens):
+                    self.move(cfg_wx, cfg_wy)
 
         # 跨线程后台数据更新桥
         self._bridge = _SnapshotBridge(self)
@@ -276,7 +361,9 @@ class TokenHUDWindow(QWidget):
         self.show()
         QApplication.processEvents()
         self.dwm_info = apply_win11_mica_and_rounded_corners(
-            self, backdrop_type=self.backdrop_type
+            self,
+            backdrop_type="none" if self._is_island_mode else self.backdrop_type,
+            is_island=self._is_island_mode,
         )
         self._top_hwnd = resolve_top_level_hwnd(self) or int(self.dwm_info.get("hwnd") or 0)
 
@@ -315,9 +402,8 @@ class TokenHUDWindow(QWidget):
         self.header_lay.setContentsMargins(10, 0, 6, 0)
         self.header_lay.setSpacing(6)
 
-        self.status_dot = QLabel("●", self.header)
-        self.status_dot.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        self.status_dot.setStyleSheet(f"color: {self.FG_GREEN}; background: transparent; border: none;")
+        self.status_dot = StatusIndicatorWidget(self.header)
+        self.status_dot.setFixedSize(14, 14)
         self.status_dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.header_lay.addWidget(self.status_dot, 0)
 
@@ -355,6 +441,38 @@ class TokenHUDWindow(QWidget):
         self._grand_total_qlabel.hovered.connect(self._on_grand_total_hovered)
         self._grand_total_qlabel.clicked.connect(self._reset_pinned_session)
         self.header_lay.addWidget(self._grand_total_qlabel, 0)
+
+        self.island_btn = _HoverLabel("◱", self.header)
+        self.island_btn.setFont(QFont("Segoe UI Symbol", 9, QFont.Weight.Bold))
+        self.island_btn.setToolTip("折叠为灵动岛胶囊模式 (双击顶栏亦可切换)")
+        self.island_btn.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none; padding: 2px 4px;")
+        self.island_btn.hovered.connect(
+            lambda h: self.island_btn.setStyleSheet(
+                f"color: {self.FG_ACCENT if h else self.FG_MUTED}; background: transparent; border: none; padding: 2px 4px;"
+            )
+        )
+        self.island_btn.clicked.connect(self.toggle_island_mode)
+        self.header_lay.addWidget(self.island_btn, 0)
+
+        self.island_badge_lbl = QLabel("Token", self.header)
+        self.island_badge_lbl.setFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+        self.island_badge_lbl.setStyleSheet(f"color: {self.FG_ACCENT}; background: transparent; border: none;")
+        self.island_badge_lbl.hide()
+        self.header_lay.addWidget(self.island_badge_lbl, 0)
+
+        self.island_token_lbl = AnimatedNumberLabel("0 · $0.00", self.header)
+        self.island_token_lbl.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        self.island_token_lbl.setStyleSheet(f"color: {self.FG_YELLOW}; background: transparent; border: none;")
+        self.island_token_lbl.hide()
+        self.header_lay.addWidget(self.island_token_lbl, 0)
+
+        self.island_expand_btn = _HoverLabel("◳", self.header)
+        self.island_expand_btn.setFont(QFont("Segoe UI Symbol", 9, QFont.Weight.Bold))
+        self.island_expand_btn.setToolTip("展开为完整面板")
+        self.island_expand_btn.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none; padding: 0 4px;")
+        self.island_expand_btn.clicked.connect(self.toggle_island_mode)
+        self.island_expand_btn.hide()
+        self.header_lay.addWidget(self.island_expand_btn, 0)
 
         self.settings_btn = _HoverLabel("⚙", self.header)
         self.settings_btn.setFont(QFont("Segoe UI Symbol", 9, QFont.Weight.Bold))
@@ -416,6 +534,231 @@ class TokenHUDWindow(QWidget):
         self.resize_grip.raise_()
 
         self._show_card(0)
+
+    def _switch_header_mode(self, is_island: bool) -> None:
+        if is_island:
+            self._title_qlabel.hide()
+            self.reset_active_btn.hide()
+            self.switch_hint_lbl.hide()
+            self._grand_total_qlabel.hide()
+            self.island_btn.hide()
+            self.settings_btn.hide()
+            self.close_btn.hide()
+
+            self.island_badge_lbl.show()
+            self.island_token_lbl.show()
+            self.island_expand_btn.show()
+            self.header_lay.setContentsMargins(8, 0, 8, 0)
+            self.header.setStyleSheet("background: transparent; border: none;")
+        else:
+            self.island_badge_lbl.hide()
+            self.island_token_lbl.hide()
+            self.island_expand_btn.hide()
+
+            self._title_qlabel.show()
+            self._grand_total_qlabel.show()
+            self.island_btn.show()
+            self.settings_btn.show()
+            self.close_btn.show()
+            self.header_lay.setContentsMargins(10, 0, 6, 0)
+            self.header.setStyleSheet(f"background-color: {self.BG_HEADER_CSS}; border: none;")
+
+    def _sync_island_glow_loop(self) -> None:
+        """同步灵动岛胶囊态下的动态流光动画循环。"""
+        animator = get_global_animator()
+        if self._is_island_mode and getattr(self, "_last_combined_running", False) and not animator.is_paused:
+            if not animator.is_loop_running("island_glow"):
+                def _on_island_glow(phase: float) -> None:
+                    self._island_glow_angle = phase * 360.0
+                    self.update()
+                animator.start_loop(key="island_glow", duration_ms=2400, on_tick=_on_island_glow)
+        else:
+            if animator.has_loop("island_glow"):
+                animator.stop_loop("island_glow")
+            self._island_glow_angle = 0.0
+
+    def _cancel_and_hide_peek(self, instant: bool = True) -> None:
+        """取消悬停/收回定时器并隐藏 Peek 迷你预览面板。"""
+        if hasattr(self, "_peek_hover_timer") and self._peek_hover_timer.isActive():
+            self._peek_hover_timer.stop()
+        if hasattr(self, "_peek_hide_timer") and self._peek_hide_timer.isActive():
+            self._peek_hide_timer.stop()
+        self._is_island_hovered = False
+        if hasattr(self, "peek_popup") and self.peek_popup is not None:
+            self.peek_popup.hide_peek(instant=instant)
+
+    def _on_peek_hover_timeout(self) -> None:
+        """鼠标悬停胶囊满 320ms 时触发 Peek 浮层展开。"""
+        if (
+            not getattr(self, "_is_island_mode", False)
+            or getattr(self, "_is_morphing", False)
+            or getattr(self, "_is_dragging", False)
+            or not self.isVisible()
+            or self.isMinimized()
+        ):
+            return
+        if self._is_island_hovered and hasattr(self, "peek_popup") and self.peek_popup is not None:
+            self.peek_popup.show_peek()
+
+    def _on_peek_hide_timeout(self) -> None:
+        """鼠标同时离开胶囊与 Peek 面板满 200ms 时触发淡出收回。"""
+        popup_hovered = bool(getattr(self, "peek_popup", None) and self.peek_popup.is_hovered)
+        if not self._is_island_hovered and not popup_hovered:
+            if hasattr(self, "peek_popup") and self.peek_popup is not None:
+                self.peek_popup.hide_peek(instant=False)
+
+    def _on_peek_popup_enter(self) -> None:
+        """鼠标进入 Peek 面板本身时取消收回定时器，保持展示。"""
+        if hasattr(self, "_peek_hide_timer") and self._peek_hide_timer.isActive():
+            self._peek_hide_timer.stop()
+
+    def _on_peek_popup_leave(self) -> None:
+        """鼠标离开 Peek 面板时，若也不在胶囊上则启动 200ms 延迟收回。"""
+        if not self._is_island_hovered:
+            if hasattr(self, "_peek_hide_timer"):
+                self._peek_hide_timer.start(200)
+
+    def toggle_island_mode(self, instant: bool = False) -> None:
+        """切换灵动岛胶囊态与完整展开态（支持 A+B 混合动画：动画期间固定透明大包围盒零撕裂插值，结束后匹配真实尺寸）。"""
+        self._cancel_and_hide_peek(instant=True)
+        animator = get_global_animator()
+        target_pill_w = 260
+        target_pill_h = 34
+
+        if not self._is_island_mode:
+            # 1. 完整态 -> 胶囊态
+            self._saved_full_geo = (self.width(), self.height())
+            orig_w, orig_h = self.width(), self.height()
+            screen = (
+                (self.screen() if hasattr(self, "screen") else None)
+                or self._app.screenAt(self.geometry().center())
+                or self._app.primaryScreen()
+            )
+            avail_geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+            target_x = self.x() + self.width() - target_pill_w
+            target_y = self.y()
+            margin = 8
+            min_x = avail_geo.left() + margin
+            max_x = max(min_x, avail_geo.right() - target_pill_w - margin)
+            min_y = avail_geo.top() + margin
+            max_y = max(min_y, avail_geo.bottom() - target_pill_h - margin)
+            anchor_x = max(min_x, min(target_x, max_x))
+            anchor_y = max(min_y, min(target_y, max_y))
+
+            if instant or animator.is_paused:
+                self._is_island_mode = True
+                self.setMinimumSize(160, 34)
+                self.body_frame.hide()
+                self.resize_grip.hide()
+                self._switch_header_mode(is_island=True)
+                self.setGeometry(anchor_x, anchor_y, target_pill_w, target_pill_h)
+                apply_win11_mica_and_rounded_corners(self, "none", is_island=True)
+                self._sync_island_glow_loop()
+                self.update()
+                return
+
+            self._is_morphing = True
+            self.body_frame.hide()
+            self.resize_grip.hide()
+            self._switch_header_mode(is_island=True)
+            apply_win11_mica_and_rounded_corners(self, "none", is_island=True)
+
+            def _on_morph_update(progress: float) -> None:
+                cur_w = lerp(float(orig_w), float(target_pill_w), progress)
+                cur_h = lerp(float(orig_h), float(target_pill_h), progress)
+                cur_r = lerp(8.0, 17.0, progress)
+                # 右上角锚定
+                self._morph_rect = QRectF(float(orig_w) - cur_w, 0.0, cur_w, cur_h)
+                self._morph_radius = cur_r
+                self.update()
+
+            def _on_morph_finished() -> None:
+                self._is_morphing = False
+                self._is_island_mode = True
+                self.setMinimumSize(160, 34)
+                self.setGeometry(anchor_x, anchor_y, target_pill_w, target_pill_h)
+                apply_win11_mica_and_rounded_corners(self, "none", is_island=True)
+                self._sync_island_glow_loop()
+                self.update()
+
+            animator.start_tween(
+                key="island_morph",
+                start_val=0.0,
+                end_val=1.0,
+                duration_ms=220,
+                easing_fn=out_quart,
+                on_update=_on_morph_update,
+                on_finished=_on_morph_finished,
+            )
+        else:
+            # 2. 胶囊态 -> 完整态
+            animator.stop_loop("island_glow")
+            self._island_glow_angle = 0.0
+            full_w, full_h = getattr(self, "_saved_full_geo", (740, 330))
+            screen = (
+                (self.screen() if hasattr(self, "screen") else None)
+                or self._app.screenAt(self.geometry().center())
+                or self._app.primaryScreen()
+            )
+            avail_geo = screen.availableGeometry() if screen else QRect(0, 0, 1920, 1080)
+            target_x = self.x() + self.width() - full_w
+            target_y = self.y()
+            margin = 8
+            min_x = avail_geo.left() + margin
+            max_x = max(min_x, avail_geo.right() - full_w - margin)
+            min_y = avail_geo.top() + margin
+            max_y = max(min_y, avail_geo.bottom() - full_h - margin)
+            anchor_x = max(min_x, min(target_x, max_x))
+            anchor_y = max(min_y, min(target_y, max_y))
+
+            if instant or animator.is_paused:
+                self._is_island_mode = False
+                self.setMinimumSize(self.RESIZE_MIN_W, self.RESIZE_MIN_H)
+                self.setGeometry(anchor_x, anchor_y, full_w, full_h)
+                self._switch_header_mode(is_island=False)
+                self.body_frame.show()
+                self.resize_grip.show()
+                apply_win11_mica_and_rounded_corners(self, self.backdrop_type, is_island=False)
+                self._apply_responsive_scale()
+                self.update()
+                return
+
+            self._is_morphing = True
+            self.setMinimumSize(160, 34)
+            # 先一步将透明包围盒扩至完整尺寸，内部直绘插值
+            self.setGeometry(anchor_x, anchor_y, full_w, full_h)
+            apply_win11_mica_and_rounded_corners(self, "none", is_island=True)
+            self._switch_header_mode(is_island=False)
+            self.header.hide()  # 变形期间隐藏顶栏文本，动画结束后显示
+
+            def _on_expand_update(progress: float) -> None:
+                cur_w = lerp(float(target_pill_w), float(full_w), progress)
+                cur_h = lerp(float(target_pill_h), float(full_h), progress)
+                cur_r = lerp(17.0, 8.0, progress)
+                self._morph_rect = QRectF(float(full_w) - cur_w, 0.0, cur_w, cur_h)
+                self._morph_radius = cur_r
+                self.update()
+
+            def _on_expand_finished() -> None:
+                self._is_morphing = False
+                self._is_island_mode = False
+                self.setMinimumSize(self.RESIZE_MIN_W, self.RESIZE_MIN_H)
+                self.header.show()
+                self.body_frame.show()
+                self.resize_grip.show()
+                apply_win11_mica_and_rounded_corners(self, self.backdrop_type, is_island=False)
+                self._apply_responsive_scale()
+                self.update()
+
+            animator.start_tween(
+                key="island_morph",
+                start_val=0.0,
+                end_val=1.0,
+                duration_ms=240,
+                easing_fn=out_back,
+                on_update=_on_expand_update,
+                on_finished=_on_expand_finished,
+            )
 
     def _build_sidebar(self) -> None:
         """构建左侧常驻历史会话列表（无滚动条，纯静默滚轮滑动，单句柄绘制度）。"""
@@ -590,18 +933,25 @@ class TokenHUDWindow(QWidget):
         lbl_t1.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
         lbl_t1.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lbl_t1.setMinimumWidth(0)
-        total_val = QLabel("0", tot_frame)
+        total_val = AnimatedNumberLabel("0", tot_frame)
         total_val.setFont(QFont("Consolas", 16, QFont.Weight.Bold))
         total_val.setStyleSheet(f"color: {self.FG_GREEN}; background: transparent; border: none;")
         total_val.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         total_val.setMinimumWidth(0)
+        delta_badge = StepDeltaBadgeWidget(tot_frame)
+        val_row = QHBoxLayout()
+        val_row.setContentsMargins(0, 0, 0, 0)
+        val_row.setSpacing(6)
+        val_row.addWidget(total_val, 0)
+        val_row.addWidget(delta_badge, 0)
+        val_row.addStretch(1)
         cost_val = QLabel("本会话折合: ≈ $0.00", tot_frame)
         cost_val.setFont(QFont("Microsoft YaHei UI", 7, QFont.Weight.Bold))
         cost_val.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
         cost_val.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         cost_val.setMinimumWidth(0)
         tot_left.addWidget(lbl_t1)
-        tot_left.addWidget(total_val)
+        tot_left.addLayout(val_row)
         tot_left.addWidget(cost_val)
         tot_left.addStretch(1)
         tot_lay.addLayout(tot_left, 3)
@@ -615,7 +965,7 @@ class TokenHUDWindow(QWidget):
         lbl_t2.setAlignment(Qt.AlignmentFlag.AlignRight)
         lbl_t2.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lbl_t2.setMinimumWidth(0)
-        ctx_val = QLabel("0", tot_frame)
+        ctx_val = AnimatedNumberLabel("0", tot_frame)
         ctx_val.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
         ctx_val.setStyleSheet(f"color: {self.FG_ACCENT}; background: transparent; border: none;")
         ctx_val.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -662,6 +1012,7 @@ class TokenHUDWindow(QWidget):
             "lbl_t1": lbl_t1,
             "lbl_t2": lbl_t2,
             "total_val": total_val,
+            "delta_badge": delta_badge,
             "cost_val": cost_val,
             "ctx_val": ctx_val,
             "lbl_in": lbl_in,
@@ -736,14 +1087,21 @@ class TokenHUDWindow(QWidget):
         lbl_t1 = QLabel("今日累计总 Token", tot_frame)
         lbl_t1.setFont(QFont("Microsoft YaHei UI", 7))
         lbl_t1.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
-        total_val = QLabel("0", tot_frame)
+        total_val = AnimatedNumberLabel("0", tot_frame)
         total_val.setFont(QFont("Consolas", 16, QFont.Weight.Bold))
         total_val.setStyleSheet(f"color: {self.FG_ACCENT}; background: transparent; border: none;")
+        delta_badge = StepDeltaBadgeWidget(tot_frame)
+        val_row = QHBoxLayout()
+        val_row.setContentsMargins(0, 0, 0, 0)
+        val_row.setSpacing(6)
+        val_row.addWidget(total_val, 0)
+        val_row.addWidget(delta_badge, 0)
+        val_row.addStretch(1)
         cost_val = QLabel("今日折合: ≈ $0.00", tot_frame)
         cost_val.setFont(QFont("Microsoft YaHei UI", 7, QFont.Weight.Bold))
         cost_val.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
         tot_left.addWidget(lbl_t1)
-        tot_left.addWidget(total_val)
+        tot_left.addLayout(val_row)
         tot_left.addWidget(cost_val)
         tot_left.addStretch(1)
         tot_lay.addLayout(tot_left, 3)
@@ -755,7 +1113,7 @@ class TokenHUDWindow(QWidget):
         lbl_t2.setFont(QFont("Microsoft YaHei UI", 7))
         lbl_t2.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
         lbl_t2.setAlignment(Qt.AlignmentFlag.AlignRight)
-        cache_rate_val = QLabel("0.0%", tot_frame)
+        cache_rate_val = AnimatedNumberLabel("0.0%", tot_frame)
         cache_rate_val.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
         cache_rate_val.setStyleSheet(f"color: {self.FG_GREEN}; background: transparent; border: none;")
         cache_rate_val.setAlignment(Qt.AlignmentFlag.AlignRight)
@@ -797,6 +1155,7 @@ class TokenHUDWindow(QWidget):
             "lbl_t1": lbl_t1,
             "lbl_t2": lbl_t2,
             "total_val": total_val,
+            "delta_badge": delta_badge,
             "cost_val": cost_val,
             "cache_rate_val": cache_rate_val,
             "lbl_in": lbl_in,
@@ -814,7 +1173,8 @@ class TokenHUDWindow(QWidget):
         color: str,
         cell_registry: list[dict[str, Any]] | None = None,
     ) -> QLabel:
-        cell = QFrame(self)
+        cell = MetricCellWidget(self)
+        cell.set_accent_color(color)
         cell.setStyleSheet("background: transparent; border: none;")
         cell.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         cell.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -826,7 +1186,7 @@ class TokenHUDWindow(QWidget):
         t_lbl = QLabel(title, cell)
         t_lbl.setFont(QFont("Microsoft YaHei UI", 7))
         t_lbl.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
-        val_lbl = QLabel("0", cell)
+        val_lbl = AnimatedNumberLabel("0", cell)
         val_lbl.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
         val_lbl.setStyleSheet(f"color: {color}; background: transparent; border: none;")
         c_lay.addWidget(t_lbl)
@@ -834,7 +1194,13 @@ class TokenHUDWindow(QWidget):
         c_lay.addStretch(1)
         grid.addWidget(cell, row, col)
         if cell_registry is not None:
-            cell_registry.append({"cell": cell, "lay": c_lay, "title_lbl": t_lbl, "val_lbl": val_lbl})
+            cell_registry.append({
+                "cell": cell,
+                "lay": c_lay,
+                "title_lbl": t_lbl,
+                "val_lbl": val_lbl,
+                "last_val": 0,
+            })
         return val_lbl
 
     @staticmethod
@@ -853,6 +1219,10 @@ class TokenHUDWindow(QWidget):
         - 当数字较长或区域缩小时，自动下调字号防止水平/垂直裁切。
         """
         text = lbl.text() or "0"
+        if isinstance(lbl, AnimatedNumberLabel):
+            target_text = lbl._format_fn(lbl.target_value())
+            if len(target_text) > len(text):
+                text = target_text
         weight = QFont.Weight.Bold if bold else QFont.Weight.Normal
         chosen_pt = max(min_pt, target_pt)
         if max_px_width > 20 and max_px_height > 10:
@@ -871,6 +1241,10 @@ class TokenHUDWindow(QWidget):
 
     def _apply_responsive_scale(self) -> None:
         """根据当前窗口宽高与左右分隔比例，对侧边栏、右侧卡片容器、控件字体及数字大小执行全量自适应缩放。"""
+        if getattr(self, "_is_island_mode", False) or getattr(self, "_is_morphing", False):
+            self.header.setFixedHeight(34)
+            return
+
         w = max(self.RESIZE_MIN_W, self.width())
         h = max(self.RESIZE_MIN_H, self.height())
 
@@ -1342,9 +1716,110 @@ class TokenHUDWindow(QWidget):
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         bg_color = getattr(self, "_bg_main_qcolor", QColor(20, 22, 23, 91))
         border_color = getattr(self, "_border_qcolor", QColor("#282828"))
+
+        if self._is_morphing and not self._morph_rect.isEmpty():
+            # 变形过程直绘
+            pill_bg = QColor(self.BG_MAIN)
+            pill_bg.setAlpha(240)
+            painter.setBrush(pill_bg)
+            painter.setPen(QPen(border_color, 1.2))
+            painter.drawRoundedRect(self._morph_rect, self._morph_radius, self._morph_radius)
+            return
+
+        if self._is_island_mode:
+            # 胶囊态静态展示：16px 全圆角深色胶囊 + 固定顺时针连续闭环状态流光
+            rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+            radius = min(16.0, rect.height() * 0.5)
+            pill_bg = QColor(self.BG_MAIN)
+            pill_bg.setAlpha(245)
+            painter.setBrush(pill_bg)
+            painter.setPen(QPen(border_color, 1.2))
+            painter.drawRoundedRect(rect, radius, radius)
+
+            is_running = getattr(self, "_last_combined_running", False)
+            if is_running and not get_global_animator().is_paused:
+                accent_col = QColor(getattr(self, "FG_ACCENT", "#E78A4E"))
+                glow_angle = float(getattr(self, "_island_glow_angle", 0.0))
+                # phase 随时间 0.0 -> 1.0 递增，沿胶囊周长顺时针完整流转一圈
+                phase = (glow_angle / 360.0) % 1.0
+                breath = sine_breath(phase * 2.0)
+
+                w = max(2.0, rect.width())
+                h = max(2.0, rect.height())
+                r = min(16.0, w * 0.5, h * 0.5)
+                straight_w = max(0.0, w - 2.0 * r)
+                straight_h = max(0.0, h - 2.0 * r)
+                arc_len = 0.5 * math.pi * r
+                perimeter = max(1.0, 2.0 * straight_w + 2.0 * straight_h + 4.0 * arc_len)
+
+                def _pill_cw_point(u_norm: float) -> QPointF:
+                    """将归一化周长进度 u_norm (0~1) 映射为胶囊外框上的顺时针坐标点（顶边 -> 右圆弧 -> 底边 -> 左圆弧）。"""
+                    s = (u_norm % 1.0) * perimeter
+                    x0, y0 = rect.left(), rect.top()
+                    x1, y1 = rect.right(), rect.bottom()
+                    # 1. 顶边向右
+                    if s <= straight_w:
+                        return QPointF(x0 + r + s, y0)
+                    s -= straight_w
+                    # 2. 右上圆角顺时针向下 (-90° -> 0°)
+                    if s <= arc_len:
+                        ang = -0.5 * math.pi + (s / max(1e-6, r))
+                        return QPointF(x1 - r + r * math.cos(ang), y0 + r + r * math.sin(ang))
+                    s -= arc_len
+                    # 3. 右侧直边向下（当 H > 2r 时存在）
+                    if s <= straight_h:
+                        return QPointF(x1, y0 + r + s)
+                    s -= straight_h
+                    # 4. 右下圆角顺时针向左 (0° -> 90°)
+                    if s <= arc_len:
+                        ang = s / max(1e-6, r)
+                        return QPointF(x1 - r + r * math.cos(ang), y1 - r + r * math.sin(ang))
+                    s -= arc_len
+                    # 5. 底边向左
+                    if s <= straight_w:
+                        return QPointF(x1 - r - s, y1)
+                    s -= straight_w
+                    # 6. 左下圆角顺时针向上 (90° -> 180°)
+                    if s <= arc_len:
+                        ang = 0.5 * math.pi + (s / max(1e-6, r))
+                        return QPointF(x0 + r + r * math.cos(ang), y1 - r + r * math.sin(ang))
+                    s -= arc_len
+                    # 7. 左侧直边向上（当 H > 2r 时存在）
+                    if s <= straight_h:
+                        return QPointF(x0, y1 - r - s)
+                    s -= straight_h
+                    # 8. 左上圆角顺时针向右 (180° -> 270°，闭合回顶边起点)
+                    ang = math.pi + (s / max(1e-6, r))
+                    return QPointF(x0 + r + r * math.cos(ang), y0 + r + r * math.sin(ang))
+
+                peak_col = QColor(accent_col).lighter(int(round(115 + 12 * breath)))
+                peak_col.setAlpha(255)
+
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                tail_ratio = 0.30  # 顺时针流光彗星占周长 30%
+                num_segs = 72
+                du = tail_ratio / float(num_segs)
+                pts = [_pill_cw_point(phase - tail_ratio + i * du) for i in range(num_segs + 1)]
+                for i in range(num_segs):
+                    t_mid = (i + 0.5) / float(num_segs)
+                    intensity = t_mid * t_mid * (3.0 - 2.0 * t_mid)
+                    seg_col = lerp_color(accent_col, peak_col, intensity)
+                    seg_col.setAlpha(int(round(255.0 * (intensity ** 1.5))))
+                    seg_w = 1.15 + 0.65 * intensity
+                    seg_pen = QPen(seg_col, seg_w)
+                    seg_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    seg_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                    painter.setPen(seg_pen)
+                    sub_path = QPainterPath(pts[i])
+                    sub_path.lineTo(pts[i + 1])
+                    painter.drawPath(sub_path)
+            return
+
+        # 完整态绘制标准矩形
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         rect = self.rect().adjusted(0, 0, -1, -1)
         painter.fillRect(rect, bg_color)
         painter.setPen(QPen(border_color, 1))
@@ -1369,7 +1844,10 @@ class TokenHUDWindow(QWidget):
         self._update_bg_opacity_css_and_colors(opacity)
 
         if hasattr(self, "header"):
-            self.header.setStyleSheet(f"background-color: {self.BG_HEADER_CSS}; border: none;")
+            if getattr(self, "_is_island_mode", False):
+                self.header.setStyleSheet("background: transparent; border: none;")
+            else:
+                self.header.setStyleSheet(f"background-color: {self.BG_HEADER_CSS}; border: none;")
         if hasattr(self, "reset_active_btn") and self.reset_active_btn.isVisible():
             self.reset_active_btn.setStyleSheet(
                 f"color: {self.FG_GREEN}; background-color: {self.BG_INNER_CSS}; border: none; padding: 2px 6px; border-radius: 3px;"
@@ -1401,11 +1879,22 @@ class TokenHUDWindow(QWidget):
         glass_enabled = self.backdrop_type != "none"
 
         if hasattr(self, "header"):
-            self.header.setStyleSheet(f"background-color: {self.BG_HEADER_CSS}; border: none;")
+            if getattr(self, "_is_island_mode", False):
+                self.header.setStyleSheet("background: transparent; border: none;")
+            else:
+                self.header.setStyleSheet(f"background-color: {self.BG_HEADER_CSS}; border: none;")
         if hasattr(self, "_title_qlabel"):
             self._title_qlabel.setStyleSheet(f"color: {self.FG_PRIMARY}; background: transparent; border: none;")
         if hasattr(self, "_grand_total_qlabel"):
             self._on_grand_total_hovered(self._is_hovering_grand_total)
+        if hasattr(self, "island_btn"):
+            self.island_btn.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none; padding: 2px 4px;")
+        if hasattr(self, "island_badge_lbl"):
+            self.island_badge_lbl.setStyleSheet(f"color: {self.FG_ACCENT}; background: transparent; border: none;")
+        if hasattr(self, "island_token_lbl"):
+            self.island_token_lbl.setStyleSheet(f"color: {self.FG_YELLOW}; background: transparent; border: none;")
+        if hasattr(self, "island_expand_btn"):
+            self.island_expand_btn.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none; padding: 0 4px;")
         if hasattr(self, "reset_active_btn"):
             self.reset_active_btn.setStyleSheet(
                 f"color: {self.FG_GREEN}; background-color: {self.BG_INNER_CSS}; border: none; padding: 2px 6px; border-radius: 3px;"
@@ -1472,8 +1961,11 @@ class TokenHUDWindow(QWidget):
                     view["total_val"].setStyleSheet(f"color: {self.FG_GREEN}; background: transparent; border: none;")
                     view["ctx_val"].setStyleSheet(f"color: {self.FG_ACCENT}; background: transparent; border: none;")
 
-                for cell_info in view.get("grid_cells", []):
+                cell_colors = [self.FG_PRIMARY, self.FG_PURPLE, self.FG_YELLOW, self.FG_ACCENT]
+                for idx_c, cell_info in enumerate(view.get("grid_cells", [])):
                     cell_info["cell"].setStyleSheet("background: transparent; border: none;")
+                    if idx_c < len(cell_colors) and hasattr(cell_info["cell"], "set_accent_color"):
+                        cell_info["cell"].set_accent_color(cell_colors[idx_c])
                     cell_info["title_lbl"].setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
 
         for row in self._sidebar_rows.values():
@@ -1483,6 +1975,17 @@ class TokenHUDWindow(QWidget):
             self.splitter_handle.update()
         if hasattr(self, "resize_grip"):
             self.resize_grip.update()
+        if hasattr(self, "peek_popup") and self.peek_popup is not None:
+            self.peek_popup.apply_theme(
+                bg_main=self.BG_MAIN,
+                bg_card=self.BG_CARD,
+                border_color=self.BORDER_COLOR,
+                fg_muted=self.FG_MUTED,
+                fg_primary=self.FG_PRIMARY,
+                fg_purple=self.FG_PURPLE,
+                fg_yellow=self.FG_YELLOW,
+                fg_accent=self.FG_ACCENT,
+            )
         if getattr(self, "tray_menu", None) is not None:
             self._apply_tray_menu_style()
         self.update()
@@ -1945,18 +2448,82 @@ class TokenHUDWindow(QWidget):
         if hasattr(self, "splitter_handle"):
             self.splitter_handle.update()
 
-    def toggle_sidebar(self) -> None:
-        """切换左侧历史会话栏的折叠与展开状态，并记忆/恢复宽度占比。"""
+    def toggle_sidebar(self, instant: bool = False) -> None:
+        """切换左侧历史会话栏的折叠与展开状态（支持弹性宽度过渡与箭头旋转平滑动画）。"""
         self._sidebar_collapsed = not self._sidebar_collapsed
+        animator = get_global_animator()
+
         if self._sidebar_collapsed:
+            # 折叠
             self._saved_sidebar_ratio = max(0.18, min(0.65, self._sidebar_ratio))
-            self._sidebar_qframe.setVisible(False)
+            target_w = 0
+            start_w = self._sidebar_qframe.width()
+            if instant or animator.is_paused:
+                self._sidebar_qframe.setVisible(False)
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(1.0)
+                self._apply_responsive_scale()
+                return
+
+            def _on_collapse_update(cur_w: float) -> None:
+                w_int = int(round(cur_w))
+                if w_int <= 0:
+                    self._sidebar_qframe.setVisible(False)
+                else:
+                    self._sidebar_qframe.setFixedWidth(w_int)
+                prog = max(0.0, min(1.0, 1.0 - (cur_w / max(1.0, float(start_w)))))
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(prog)
+
+            def _on_collapse_finished() -> None:
+                self._sidebar_qframe.setVisible(False)
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(1.0)
+                self._apply_responsive_scale()
+
+            animator.start_tween(
+                key="sidebar_toggle",
+                start_val=float(start_w),
+                end_val=0.0,
+                duration_ms=200,
+                easing_fn=out_quart,
+                on_update=_on_collapse_update,
+                on_finished=_on_collapse_finished,
+            )
         else:
+            # 展开
             self._sidebar_ratio = self._saved_sidebar_ratio
             self._sidebar_qframe.setVisible(True)
-        self._apply_responsive_scale()
-        if hasattr(self, "splitter_handle"):
-            self.splitter_handle.update()
+            target_w = max(int(self.width() * self._saved_sidebar_ratio), self.SIDEBAR_W)
+            start_w = 0
+            if instant or animator.is_paused:
+                self._sidebar_qframe.setFixedWidth(target_w)
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(0.0)
+                self._apply_responsive_scale()
+                return
+
+            def _on_expand_update(cur_w: float) -> None:
+                w_int = int(round(cur_w))
+                self._sidebar_qframe.setFixedWidth(w_int)
+                prog = max(0.0, min(1.0, 1.0 - (cur_w / max(1.0, float(target_w)))))
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(prog)
+
+            def _on_expand_finished() -> None:
+                if hasattr(self, "splitter_handle"):
+                    self.splitter_handle.set_arrow_progress(0.0)
+                self._apply_responsive_scale()
+
+            animator.start_tween(
+                key="sidebar_toggle",
+                start_val=0.0,
+                end_val=float(target_w),
+                duration_ms=240,
+                easing_fn=out_back,
+                on_update=_on_expand_update,
+                on_finished=_on_expand_finished,
+            )
 
     def _has_enabled_sub_agents(self) -> bool:
         sub_agents = self.config_mgr.get("sub_agents", [])
@@ -2016,6 +2583,38 @@ class TokenHUDWindow(QWidget):
 
     def _move_window_fast(self, new_x: int, new_y: int) -> None:
         self.move(int(new_x), int(new_y))
+        if hasattr(self, "peek_popup") and self.peek_popup is not None and self.peek_popup.isVisible():
+            self.peek_popup.sync_position()
+
+    def moveEvent(self, event: Any) -> None:
+        super().moveEvent(event)
+        if hasattr(self, "peek_popup") and self.peek_popup is not None and self.peek_popup.isVisible():
+            self.peek_popup.sync_position()
+
+    def enterEvent(self, event: Any) -> None:
+        self._is_island_hovered = True
+        if hasattr(self, "_peek_hide_timer") and self._peek_hide_timer.isActive():
+            self._peek_hide_timer.stop()
+        if (
+            getattr(self, "_is_island_mode", False)
+            and not getattr(self, "_is_morphing", False)
+            and not getattr(self, "_is_dragging", False)
+        ):
+            if hasattr(self, "peek_popup") and self.peek_popup is not None and self.peek_popup.isVisible():
+                self.peek_popup.show_peek()
+            elif hasattr(self, "_peek_hover_timer"):
+                self._peek_hover_timer.start(320)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self._is_island_hovered = False
+        if hasattr(self, "_peek_hover_timer") and self._peek_hover_timer.isActive():
+            self._peek_hover_timer.stop()
+        if getattr(self, "_is_island_mode", False):
+            if hasattr(self, "peek_popup") and self.peek_popup is not None and self.peek_popup.isVisible():
+                if hasattr(self, "_peek_hide_timer"):
+                    self._peek_hide_timer.start(200)
+        super().leaveEvent(event)
 
     def _on_splitter_press(self, x_root: int) -> None:
         """供左右双栏横向调整手柄与 --self-test 统一调用的按下入口。"""
@@ -2108,6 +2707,10 @@ class TokenHUDWindow(QWidget):
 
         self._drag_moved = True
         self._user_moved_window = True
+        if hasattr(self, "_peek_hover_timer") and self._peek_hover_timer.isActive():
+            self._peek_hover_timer.stop()
+        if hasattr(self, "peek_popup") and self.peek_popup is not None and self.peek_popup.isVisible():
+            self.peek_popup.hide_peek(instant=True)
         new_x = x_root - self._drag_x
         new_y = y_root - self._drag_y
         self._move_window_fast(new_x, new_y)
@@ -2127,18 +2730,25 @@ class TokenHUDWindow(QWidget):
         elif was_header:
             self.cycle_card()
 
+    def mouseDoubleClickEvent(self, event: Any) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.toggle_island_mode()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def mousePressEvent(self, event: Any) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             local_pos = event.position().toPoint()
             g_pos = event.globalPosition().toPoint()
-            # 右下角 18x18 区域直接触发窗口缩放
-            if local_pos.x() >= self.width() - 18 and local_pos.y() >= self.height() - 18:
+            # 右下角 18x18 区域直接触发窗口缩放（胶囊态下禁用缩放）
+            if not self._is_island_mode and local_pos.x() >= self.width() - 18 and local_pos.y() >= self.height() - 18:
                 self._on_resize_press(g_pos.x(), g_pos.y())
                 event.accept()
                 return
 
             # 位于左侧列表区域内部时不启动整窗拖拽
-            if self._sidebar_qframe.geometry().contains(self.body_frame.mapFrom(self, local_pos)):
+            if not self._is_island_mode and self._sidebar_qframe.geometry().contains(self.body_frame.mapFrom(self, local_pos)):
                 super().mousePressEvent(event)
                 return
 
@@ -2390,10 +3000,12 @@ class TokenHUDWindow(QWidget):
 
     def hide(self) -> None:
         self._render_paused = True
+        self._cancel_and_hide_peek(instant=True)
         super().hide()
 
     def showMinimized(self) -> None:
         self._render_paused = True
+        self._cancel_and_hide_peek(instant=True)
         super().showMinimized()
 
     def showEvent(self, event: Any) -> None:
@@ -2402,6 +3014,7 @@ class TokenHUDWindow(QWidget):
 
     def hideEvent(self, event: Any) -> None:
         self._render_paused = True
+        self._cancel_and_hide_peek(instant=True)
         super().hideEvent(event)
 
     def changeEvent(self, event: Any) -> None:
@@ -2409,6 +3022,7 @@ class TokenHUDWindow(QWidget):
         if event is not None and event.type() == QEvent.Type.WindowStateChange:
             if self.isMinimized():
                 self._render_paused = True
+                self._cancel_and_hide_peek(instant=True)
             else:
                 self._resume_render_if_needed()
 
@@ -2504,6 +3118,41 @@ class TokenHUDWindow(QWidget):
             self._grand_total_hover_text if self._is_hovering_grand_total else self._grand_total_compact_text
         )
 
+        main_status = str(main_sess.get("status") or "idle") if main_sess else "idle"
+        sub_status = str(active_sub_sess.get("status") or "idle") if active_sub_sess else "idle"
+        combined_running = "running" in (main_status, sub_status)
+        combined_active = "active" in (main_status, sub_status)
+
+        # 更新顶部指示灯与空闲自动关闭计时
+        if combined_running:
+            self.status_dot.set_status("running", self.FG_GREEN)
+        elif combined_active:
+            self.status_dot.set_status("active", self.FG_YELLOW)
+        else:
+            self.status_dot.set_status("idle", self.FG_MUTED)
+
+        if combined_running or combined_active:
+            self._seen_running = True
+            self._idle_since = None
+        elif self._seen_running and self._idle_since is None:
+            self._idle_since = now_ts
+
+        self._last_combined_running = combined_running
+        instant_num = not self._in_mainloop
+        pinned_eng_name = "Token" if not self.pinned_sub_file else "[从]"
+        self.island_badge_lbl.setText(pinned_eng_name)
+        compact_cost = (
+            header_cost_str
+            if str(header_cost_str).startswith("$")
+            else (f"${header_cost_str}" if header_cost_str else "$0.00")
+        )
+        cost_suffix = f" · {compact_cost}"
+        self.island_token_lbl.set_target_value(
+            header_tot_tok,
+            format_fn=lambda v, s=cost_suffix: f"{format_num(int(round(v)))}{s}",
+            duration_ms=240,
+            instant=instant_num,
+        )
         pinned_sess: dict[str, Any] | None = None
         pinned_eng: str | None = None
         if self.pinned_main_file:
@@ -2523,6 +3172,49 @@ class TokenHUDWindow(QWidget):
             self.pinned_sub_file = None
 
         is_any_pinned = pinned_sess is not None
+        if hasattr(self, "peek_popup") and self.peek_popup is not None:
+            if is_any_pinned and pinned_sess:
+                self.peek_popup.update_metrics(
+                    in_tokens=int(pinned_sess.get("input_tokens", 0)),
+                    cache_tokens=int(pinned_sess.get("cached_tokens", 0)),
+                    out_tokens=int(pinned_sess.get("output_tokens", 0)),
+                    thought_tokens=int(pinned_sess.get("thought_tokens", 0)),
+                    is_pinned=True,
+                )
+            else:
+                self.peek_popup.update_metrics(
+                    in_tokens=int(today.get("input_tokens", 0)),
+                    cache_tokens=int(today.get("cached_tokens", 0)),
+                    out_tokens=int(today.get("output_tokens", 0)),
+                    thought_tokens=int(today.get("thought_tokens", 0)),
+                    is_pinned=False,
+                )
+
+        if self._is_island_mode:
+            # 更新流光循环（仅在未运行时启动，避免重置周期时间轴）
+            animator = get_global_animator()
+            if combined_running and not animator.is_paused:
+                if not animator.is_loop_running("island_glow"):
+                    def _on_island_glow(phase: float) -> None:
+                        self._island_glow_angle = phase * 360.0
+                        self.update()
+                    animator.start_loop(key="island_glow", duration_ms=2400, on_tick=_on_island_glow)
+            else:
+                if animator.has_loop("island_glow"):
+                    animator.stop_loop("island_glow")
+                self._island_glow_angle = 0.0
+                self.update()
+
+            if self.auto_close_idle_sec > 0 and self._idle_since is not None:
+                if (now_ts - self._idle_since) >= self.auto_close_idle_sec:
+                    self.close()
+            # 胶囊态跳过列表与 2x2 网格重绘
+            return
+        else:
+            animator = get_global_animator()
+            if animator.has_loop("island_glow"):
+                animator.stop_loop("island_glow")
+
         if self.current_card_idx != 0:
             self.current_card_idx = 0
             self._deck_qwidget.setCurrentIndex(0)
@@ -2536,6 +3228,7 @@ class TokenHUDWindow(QWidget):
         v0 = self.card_views[0]
         main_valid = bool(snap.get("main_agent_valid", False))
         has_any_sessions = bool(self._last_main_sessions or self._last_sub_sessions)
+        instant_num = not self._in_mainloop
 
         if is_any_pinned and pinned_sess:
             raw_cid = str(pinned_sess.get("cid") or pinned_sess.get("session_id") or "-")
@@ -2577,14 +3270,14 @@ class TokenHUDWindow(QWidget):
             )
             v0["lbl_t1"].setText("本对话累计 Token")
             v0["lbl_t2"].setText("对话缓存命中率")
-            v0["total_val"].setText(format_num(s_tot))
+            v0["total_val"].set_target_value(int(s_tot), instant=instant_num)
             if "cost_val" in v0:
                 v0["cost_val"].setText(f"本会话折合: ≈ {s_cost_str} (今日: ≈ {s_today_cost_str})")
             v0["cache_rate_val"].setText(f"{s_cache_rate:.1f}%")
-            v0["lbl_in"].setText(format_num(s_in))
+            v0["lbl_in"].set_target_value(int(s_in), instant=instant_num)
             v0["lbl_cache"].setText(f"{format_num(s_cache)} ({int(round(s_cache_rate))}%)")
-            v0["lbl_out"].setText(format_num(s_out))
-            v0["lbl_thought"].setText(format_num(s_thought))
+            v0["lbl_out"].set_target_value(int(s_out), instant=instant_num)
+            v0["lbl_thought"].set_target_value(int(s_thought), instant=instant_num)
             if len(v0.get("grid_cells", [])) == 4:
                 v0["grid_cells"][0]["title_lbl"].setText("输入 (Input)")
                 v0["grid_cells"][1]["title_lbl"].setText("缓存 (Cached)")
@@ -2641,38 +3334,75 @@ class TokenHUDWindow(QWidget):
                 v0["split_lbl"].setText(
                     f"Antigravity 今日累计: {format_num(m_tot_tok)} | 历史会话总数: {len(self._last_main_sessions)}"
                 )
-            v0["total_val"].setText(format_num(t_tot))
+            v0["total_val"].set_target_value(int(t_tot), instant=instant_num)
             if "cost_val" in v0:
                 v0["cost_val"].setText(f"今日折合: ≈ {t_cost_str}")
             v0["cache_rate_val"].setText(f"{t_cache_rate:.1f}%")
-            v0["lbl_in"].setText(format_num(t_in))
-            v0["lbl_cache"].setText(format_num(t_cache))
-            v0["lbl_out"].setText(format_num(t_out))
-            v0["lbl_thought"].setText(format_num(t_thought))
+            v0["lbl_in"].set_target_value(int(t_in), instant=instant_num)
+            v0["lbl_cache"].set_target_value(int(t_cache), instant=instant_num)
+            v0["lbl_out"].set_target_value(int(t_out), instant=instant_num)
+            v0["lbl_thought"].set_target_value(int(t_thought), instant=instant_num)
 
         if is_any_pinned:
             self._title_qlabel.setText("[当前选中对话]")
+            context_key = (
+                "pinned",
+                str(pinned_eng),
+                str(self.pinned_main_file or self.pinned_sub_file or ""),
+            )
+            current_tot = int(s_tot)
         else:
             self._title_qlabel.setText("[Token 总用量]")
+            context_key = ("today", bool(has_sub))
+            current_tot = int(t_tot)
 
-        main_status = str(main_sess.get("status") or "idle") if main_sess else "idle"
-        sub_status = str(active_sub_sess.get("status") or "idle") if active_sub_sess else "idle"
-        combined_running = "running" in (main_status, sub_status)
-        combined_active = "active" in (main_status, sub_status)
+        anim_enabled = bool(self.config_mgr.get("enable_animations", True))
+        if hasattr(v0.get("frame"), "set_glowing"):
+            v0["frame"].set_glowing(combined_running and anim_enabled)
 
-        # 更新顶部指示灯与空闲自动关闭计时
-        if combined_running:
-            self.status_dot.setStyleSheet(f"color: {self.FG_GREEN}; background: transparent; border: none;")
-        elif combined_active:
-            self.status_dot.setStyleSheet(f"color: {self.FG_YELLOW}; background: transparent; border: none;")
+        def _extract_cell_int(lbl_w: Any) -> int:
+            if lbl_w is None:
+                return 0
+            val = int(round(lbl_w.target_value())) if hasattr(lbl_w, "target_value") else 0
+            if val > 0:
+                return val
+            raw_txt = lbl_w.text() if hasattr(lbl_w, "text") else ""
+            head = str(raw_txt).split("(", 1)[0].replace(",", "").strip()
+            try:
+                return int(float(head)) if head else 0
+            except Exception:
+                return 0
+
+        if context_key != self._last_tracked_context_key:
+            self._last_tracked_context_key = context_key
+            self._last_tracked_tokens = current_tot
+            for cell_info in v0.get("grid_cells", []):
+                cell_info["last_val"] = _extract_cell_int(cell_info.get("val_lbl"))
         else:
-            self.status_dot.setStyleSheet(f"color: {self.FG_MUTED}; background: transparent; border: none;")
+            if current_tot > self._last_tracked_tokens > 0:
+                delta = current_tot - self._last_tracked_tokens
+                delta_badge = v0.get("delta_badge")
+                if (
+                    delta_badge is not None
+                    and self._in_mainloop
+                    and not get_global_animator().is_paused
+                    and not getattr(self, "_is_island_mode", False)
+                ):
+                    delta_badge.trigger_delta(delta)
+            self._last_tracked_tokens = current_tot
 
-        if combined_running or combined_active:
-            self._seen_running = True
-            self._idle_since = None
-        elif self._seen_running and self._idle_since is None:
-            self._idle_since = now_ts
+            for cell_info in v0.get("grid_cells", []):
+                cur_v = _extract_cell_int(cell_info.get("val_lbl"))
+                last_v = int(cell_info.get("last_val", 0))
+                if (
+                    cur_v > last_v > 0
+                    and self._in_mainloop
+                    and anim_enabled
+                    and not get_global_animator().is_paused
+                    and not getattr(self, "_is_island_mode", False)
+                ):
+                    cell_info["cell"].trigger_pulse(delta=cur_v - last_v)
+                cell_info["last_val"] = cur_v
 
         self._adjust_window_geometry()
 
@@ -2725,8 +3455,23 @@ class TokenHUDWindow(QWidget):
 
     def _cleanup_on_exit(self) -> None:
         self._in_mainloop = False
+        self._cancel_and_hide_peek(instant=True)
+        if hasattr(self, "peek_popup") and self.peek_popup is not None:
+            try:
+                self.peek_popup.close()
+            except Exception:
+                pass
         if hasattr(self, "_timer"):
             self._timer.stop()
+        try:
+            if hasattr(self, "config_mgr") and self.config_mgr is not None:
+                cur_mode = "island" if getattr(self, "_is_island_mode", False) else "full"
+                self.config_mgr.set("window_mode", cur_mode, persist=False)
+                self.config_mgr.set("window_x", int(self.x()), persist=False)
+                self.config_mgr.set("window_y", int(self.y()), persist=False)
+                self.config_mgr.save()
+        except Exception:
+            pass
         try:
             if hasattr(self, "monitor") and self.monitor is not None:
                 self.monitor.save_history()

@@ -729,6 +729,11 @@ class SettingsDialog(QDialog):
         self.auto_update_pricing_chk.stateChanged.connect(self._on_auto_update_pricing_changed)
         self.auto_update_pricing = self.auto_update_pricing_chk
         pricing_net_row.addWidget(self.auto_update_pricing_chk, 0)
+
+        self.enable_animations_chk = QCheckBox("启用视觉平滑过渡与流光动效", self.pricing_section_widget)
+        self.enable_animations_chk.setChecked(True)
+        self.enable_animations_chk.stateChanged.connect(self._on_enable_animations_changed)
+        pricing_net_row.addWidget(self.enable_animations_chk, 0)
         pricing_net_row.addStretch(1)
 
         proxy_lbl = QLabel("网络代理 (留空使用系统代理)：", self.pricing_section_widget)
@@ -897,6 +902,9 @@ class SettingsDialog(QDialog):
 
             auto_upd = bool(self.config_mgr.get("auto_update_pricing", True))
             self.auto_update_pricing_chk.setChecked(auto_upd)
+
+            enable_anim = bool(self.config_mgr.get("enable_animations", True))
+            self.enable_animations_chk.setChecked(enable_anim)
 
             proxy_val = str(self.config_mgr.get("proxy", "") or "").strip()
             self.proxy_edit.setText(proxy_val)
@@ -1523,6 +1531,18 @@ class SettingsDialog(QDialog):
         if getattr(self, "_loading_config", False):
             return
         self.config_mgr.set("auto_update_pricing", bool(self.auto_update_pricing_chk.isChecked()))
+
+    def _on_enable_animations_changed(self, _state: Any = None) -> None:
+        if getattr(self, "_loading_config", False):
+            return
+        enabled = bool(self.enable_animations_chk.isChecked())
+        self.config_mgr.set("enable_animations", enabled)
+        from .animations import get_global_animator
+
+        if enabled:
+            get_global_animator().resume_animations()
+        else:
+            get_global_animator().pause_animations(snap_to_target=True)
 
     def _on_proxy_changed(self, _txt: str = "") -> None:
         if getattr(self, "_loading_config", False):

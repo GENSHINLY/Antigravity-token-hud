@@ -64,6 +64,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "poll_interval_ms": 1000,
     "scan_ttl_sec": 2.5,
     "auto_update_pricing": True,
+    "enable_animations": True,
+    "window_mode": "full",
+    "window_x": None,
+    "window_y": None,
     "proxy": "",
     "usd_to_cny_rate": DEFAULT_USD_TO_CNY_RATE,
     "pricing": get_default_pricing_config(),
@@ -194,6 +198,26 @@ class ConfigManager:
             )
         else:
             clean["auto_update_pricing"] = bool(raw_auto_update)
+
+        raw_animations = raw.get("enable_animations", True)
+        if isinstance(raw_animations, str):
+            clean["enable_animations"] = raw_animations.strip().lower() not in (
+                "false",
+                "0",
+                "no",
+                "off",
+            )
+        else:
+            clean["enable_animations"] = bool(raw_animations)
+
+        raw_mode = str(raw.get("window_mode") or "full").strip().lower()
+        clean["window_mode"] = "island" if raw_mode == "island" else "full"
+
+        raw_wx = raw.get("window_x")
+        clean["window_x"] = int(raw_wx) if isinstance(raw_wx, int) and not isinstance(raw_wx, bool) else None
+
+        raw_wy = raw.get("window_y")
+        clean["window_y"] = int(raw_wy) if isinstance(raw_wy, int) and not isinstance(raw_wy, bool) else None
 
         raw_proxy = raw.get("proxy", "")
         if isinstance(raw_proxy, str):

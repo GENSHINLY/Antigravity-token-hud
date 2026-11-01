@@ -5,12 +5,14 @@ hud_core.ui_widgets - 格式化工具、调色板派生、ResizeGripWidget、Spl
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any
+import re
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from PySide6.QtCore import QObject, QPoint, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QObject, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QConicalGradient, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .animations import get_global_animator, lerp, lerp_color, out_quart, sine_breath
 from .config import THEME_PRESETS, _HEX_COLOR_RE
 from .pricing import format_cost_usd
 
@@ -210,12 +213,17 @@ class SplitterHandleWidget(QWidget):
         self._hovered = False
         self._dragging = False
         self._drag_started = False
+        self._arrow_progress: float = 0.0
         self._press_pos = QPoint()
         self._press_g_pos = QPoint()
         self.setFixedWidth(14)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
         self._sync_tooltip()
+
+    def set_arrow_progress(self, progress: float) -> None:
+        self._arrow_progress = max(0.0, min(1.0, float(progress)))
+        self.update()
 
     def _sync_tooltip(self) -> None:
         is_collapsed = getattr(self._hud, "_sidebar_collapsed", False)
@@ -312,14 +320,12 @@ class SplitterHandleWidget(QWidget):
 
         # 绘制微型折叠指示箭头
         is_collapsed = getattr(self._hud, "_sidebar_collapsed", False)
-        if not is_collapsed:
-            p1 = QPoint(cx + 2, cy - 5)
-            p2 = QPoint(cx - 2, cy)
-            p3 = QPoint(cx + 2, cy + 5)
-        else:
-            p1 = QPoint(cx - 2, cy - 5)
-            p2 = QPoint(cx + 2, cy)
-            p3 = QPoint(cx - 2, cy + 5)
+        _ = is_collapsed
+        # 根据 _arrow_progress 平滑过渡：0.0 偏移量 +2/-2，1.0 偏移量 -2/+2
+        offset = 2.0 - 4.0 * self._arrow_progress
+        p1 = QPoint(int(round(cx + offset)), cy - 5)
+        p2 = QPoint(int(round(cx - offset)), cy)
+        p3 = QPoint(int(round(cx + offset)), cy + 5)
 
         arrow_color = QColor(accent_hex) if is_active else QColor(getattr(self._hud, "FG_MUTED", "#928374"))
         arrow_pen = QPen(arrow_color, 1.8)
@@ -362,6 +368,465 @@ class _HoverLabel(QLabel):
         super().leaveEvent(event)
 
 
+class AnimatedNumberLabel(QLabel):
+    """
+    平滑数值滚动标签：
+    - 支持数字变动的平滑滚动补间动画；
+    - 动画启动前预先按目标格式化文本测量并锁定字号，防止插值过程中因位数变动引发抖动；
+    - 保留全量 QLabel 接口兼容性（text(), setText() 等），在 instant=True 或无动画时立即显示终态。
+    """
+
+    def __init__(self, text: str = "0", parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        self._current_value: float = self._parse_num(text)
+        self._target_value: float = self._current_value
+        self._format_fn: Callable[[float], str] = lambda v: format_num(int(round(v)))
+
+    @staticmethod
+    def _parse_num(val_str: Any) -> float:
+        try:
+            s = str(val_str).replace(",", "").strip()
+            # 支持提取百分比或纯数字
+            if s.endswith("%"):
+                return float(s[:-1])
+            return float(s)
+        except Exception:
+            return 0.0
+
+    def current_value(self) -> float:
+        return self._current_value
+
+    def target_value(self) -> float:
+        return self._target_value
+
+    def snap_to_target(self) -> None:
+        """立即跳至终态值。"""
+        get_global_animator().stop_tween(f"num_lbl_{id(self)}", snap_to_target=True)
+
+    def set_target_value(
+        self,
+        val: float,
+        format_fn: Optional[Callable[[float], str]] = None,
+        duration_ms: int = 240,
+        instant: bool = False,
+    ) -> None:
+        """设置目标数值并平滑插值滚动。"""
+        if format_fn is not None:
+            self._format_fn = format_fn
+        self._target_value = float(val)
+
+        # 终态文本
+        final_text = self._format_fn(self._target_value)
+
+        # 若处于 instant 模式或无需动画
+        if instant or duration_ms <= 0 or get_global_animator().is_paused:
+            get_global_animator().stop_tween(f"num_lbl_{id(self)}")
+            self._current_value = self._target_value
+            super().setText(final_text)
+            return
+
+        def _on_update(cur_v: float) -> None:
+            self._current_value = cur_v
+            super(AnimatedNumberLabel, self).setText(self._format_fn(cur_v))
+
+        def _on_finished() -> None:
+            self._current_value = self._target_value
+            super(AnimatedNumberLabel, self).setText(final_text)
+
+        get_global_animator().start_tween(
+            key=f"num_lbl_{id(self)}",
+            start_val=self._current_value,
+            end_val=self._target_value,
+            duration_ms=duration_ms,
+            easing_fn=out_quart,
+            on_update=_on_update,
+            on_finished=_on_finished,
+        )
+
+    def setText(self, text: str) -> None:
+        """兼容传统 setText 赋值：若传入数值字符串则同步更新内部值，立即显示。"""
+        parsed = self._parse_num(text)
+        self._current_value = parsed
+        self._target_value = parsed
+        get_global_animator().stop_tween(f"num_lbl_{id(self)}")
+        super().setText(str(text))
+
+
+class StatusIndicatorWidget(QWidget):
+    """
+    顶栏状态指示器组件：
+    - running: 中心实心核心点 + 外扩衰减涟漪环（1000ms 循环）；
+    - active: 余弦呼吸灯（2000ms 循环）；
+    - idle: 静态灰点（零定时器开销）；
+    - 兼容旧 QLabel 接口（setFont, setStyleSheet, text）。
+    """
+
+    _COLOR_CSS_RE = re.compile(r"color\s*:\s*([^;]+)", re.IGNORECASE)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setFixedSize(16, 16)
+        self._status: str = "idle"
+        self._color: QColor = QColor("#928374")
+        self._phase: float = 0.0
+        self._font: Optional[QFont] = None
+        self._style_sheet: str = ""
+
+    def set_status(self, status: str, color_hex: str = "") -> None:
+        norm_status = str(status or "idle").strip().lower()
+        if norm_status not in ("idle", "active", "running"):
+            norm_status = "idle"
+
+        new_color = QColor(color_hex) if color_hex else QColor(self._color)
+        if not new_color.isValid():
+            if norm_status == "running":
+                new_color = QColor("#A9B665")
+            elif norm_status == "active":
+                new_color = QColor("#D8A657")
+            else:
+                new_color = QColor("#928374")
+        elif not color_hex:
+            if norm_status == "running" and self._color.name().lower() == "#928374":
+                new_color = QColor("#A9B665")
+            elif norm_status == "active" and self._color.name().lower() == "#928374":
+                new_color = QColor("#D8A657")
+            elif norm_status == "idle":
+                new_color = QColor("#928374")
+
+        animator = get_global_animator()
+        loop_key = f"status_{id(self)}"
+
+        if (
+            self._status == norm_status
+            and self._color.name().lower() == new_color.name().lower()
+            and (
+                (norm_status == "idle" and not animator.has_loop(loop_key))
+                or (norm_status in ("running", "active") and (animator.is_paused or animator.has_loop(loop_key)))
+            )
+        ):
+            return
+
+        self._status = norm_status
+        self._color = new_color
+
+        if norm_status == "running" and not animator.is_paused:
+            animator.start_loop(loop_key, duration_ms=1000, on_tick=self._on_tick)
+        elif norm_status == "active" and not animator.is_paused:
+            animator.start_loop(loop_key, duration_ms=2000, on_tick=self._on_tick)
+        else:
+            animator.stop_loop(loop_key)
+            self._phase = 0.0
+        self.update()
+
+    def _on_tick(self, phase: float) -> None:
+        self._phase = float(phase)
+        self.update()
+
+    def setFont(self, font: Any) -> None:  # noqa: N802
+        self._font = font
+
+    def setStyleSheet(self, style: str) -> None:  # noqa: N802
+        self._style_sheet = str(style or "")
+        m = self._COLOR_CSS_RE.search(self._style_sheet)
+        if m:
+            raw_col = m.group(1).strip()
+            col = QColor(raw_col)
+            if col.isValid():
+                hex_low = col.name().lower()
+                if hex_low in ("#a9b665", "#4caf50", "#00ff00", "#8ec07c", "#b8bb26"):
+                    self.set_status("running", col.name())
+                elif hex_low in ("#d8a657", "#fabd2f", "#e78a4e", "#fe8019", "#ffeb3b"):
+                    self.set_status("active", col.name())
+                elif hex_low in ("#928374", "#7c6f64", "#888888", "#666666"):
+                    self.set_status("idle", col.name())
+                else:
+                    self._color = col
+                    self.update()
+
+    def text(self) -> str:
+        return "●"
+
+    def setText(self, _text: str) -> None:  # noqa: N802
+        pass
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802
+        _ = event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx = self.width() / 2.0
+        cy = self.height() / 2.0
+        center = QPointF(cx, cy)
+
+        if self._status == "running":
+            r = 4.0 + self._phase * 3.5
+            alpha = max(0, min(255, int(round((1.0 - self._phase) * 160))))
+            ring_col = QColor(self._color)
+            ring_col.setAlpha(alpha)
+            pen = QPen(ring_col, 1.2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(center, r, r)
+
+            core_col = QColor(self._color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(core_col))
+            painter.drawEllipse(center, 3.2, 3.2)
+        elif self._status == "active":
+            breath = sine_breath(self._phase)
+            r = 2.8 + breath * 0.8
+            alpha = max(0, min(255, int(round(120 + breath * 135))))
+            col = QColor(self._color)
+            col.setAlpha(alpha)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(col))
+            painter.drawEllipse(center, r, r)
+        else:
+            col = QColor(self._color if self._color.isValid() else "#928374")
+            col.setAlpha(160)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(col))
+            painter.drawEllipse(center, 3.0, 3.0)
+
+
+class MetricCellWidget(QFrame):
+    """
+    2x2 核心指标网格单元格容器：
+    - 支持数据跳变时触发高亮边框脉冲与右上角微型增量胶囊（trigger_pulse），通过 QPainter 叠加绘制；
+    - 避免频繁修改 QSS 引发整树重排。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._pulse_alpha: float = 0.0
+        self._delta_alpha: float = 0.0
+        self._delta_dy: float = 0.0
+        self._delta_text: str = ""
+        self._delta_font = QFont("Consolas", 8, QFont.Weight.Bold)
+        self._accent_color: QColor = QColor("#E78A4E")
+
+    def set_accent_color(self, color: QColor | str) -> None:
+        col = QColor(color) if not isinstance(color, QColor) else QColor(color)
+        if col.isValid():
+            self._accent_color = col
+
+    def trigger_pulse(
+        self,
+        duration_ms: int = 1200,
+        color: Optional[QColor | str] = None,
+        delta: int = 0,
+    ) -> None:
+        if color is not None:
+            self.set_accent_color(color)
+        self._delta_text = StepDeltaBadgeWidget.format_delta(int(delta)) if int(delta) > 0 else ""
+
+        animator = get_global_animator()
+        if animator.is_paused:
+            self._pulse_alpha = 0.0
+            self._delta_alpha = 0.0
+            self._delta_dy = 0.0
+            self.update()
+            return
+
+        def _on_update(t: float) -> None:
+            u = max(0.0, min(1.0, float(t)))
+            if u <= 0.5:
+                self._pulse_alpha = max(0.0, 1.0 - (u / 0.5))
+            else:
+                self._pulse_alpha = 0.0
+
+            if self._delta_text:
+                if u <= 0.15:
+                    p = out_quart(u / 0.15)
+                    self._delta_alpha = p
+                    self._delta_dy = lerp(3.0, 0.0, p)
+                elif u <= 0.50:
+                    self._delta_alpha = 1.0
+                    self._delta_dy = 0.0
+                else:
+                    p = (u - 0.50) / 0.50
+                    self._delta_alpha = max(0.0, 1.0 - p)
+                    self._delta_dy = lerp(0.0, -4.0, out_quart(p))
+            else:
+                self._delta_alpha = 0.0
+                self._delta_dy = 0.0
+            self.update()
+
+        def _on_finished() -> None:
+            self._pulse_alpha = 0.0
+            self._delta_alpha = 0.0
+            self._delta_dy = 0.0
+            self.update()
+
+        animator.start_tween(
+            f"cell_fx_{id(self)}",
+            start_val=0.0,
+            end_val=1.0,
+            duration_ms=duration_ms,
+            easing_fn=lambda x: x,
+            on_update=_on_update,
+            on_finished=_on_finished,
+        )
+
+    def _on_pulse_update(self, val: float) -> None:
+        self._pulse_alpha = max(0.0, min(1.0, float(val)))
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if self._pulse_alpha <= 0.01 and (self._delta_alpha <= 0.001 or not self._delta_text):
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        if self._pulse_alpha > 0.01:
+            col = QColor(self._accent_color)
+            col.setAlpha(max(0, min(255, int(self._pulse_alpha * 150))))
+            pen = QPen(col, 1.2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(QRectF(self.rect().adjusted(1, 1, -2, -2)), 3.0, 3.0)
+
+        if self._delta_alpha > 0.001 and self._delta_text:
+            painter.setFont(self._delta_font)
+            fm = QFontMetrics(self._delta_font)
+            pill_w = float(fm.horizontalAdvance(self._delta_text) + 10)
+            pill_h = 15.0
+            pill_x = float(self.width()) - pill_w - 4.0
+            pill_y = 3.0 + self._delta_dy
+            pill_rect = QRectF(pill_x, pill_y, pill_w, pill_h)
+
+            bg_col = QColor(self._accent_color)
+            bg_col.setAlpha(max(0, min(255, int(32 * self._delta_alpha))))
+            fg_col = QColor(self._accent_color)
+            fg_col.setAlpha(max(0, min(255, int(255 * self._delta_alpha))))
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(bg_col))
+            painter.drawRoundedRect(pill_rect, 3.5, 3.5)
+
+            painter.setPen(QPen(fg_col, 1.0))
+            painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, self._delta_text)
+
+
+class StepDeltaBadgeWidget(QWidget):
+    """
+    展开态汇总卡片大号总 Token 右侧的单步增量浮动胶囊徽章（位置 A）：
+    - 静止态 _alpha = 0.0，固定占位尺寸，彻底消除布局重排（Zero Relayout）；
+    - 使用 AnimationCoordinator.start_tween 驱动 1400ms 三段式弹出-停留-上浮淡出动效；
+    - 纯 QPainter 直绘微透圆角胶囊与 Consolas Bold 增量文本。
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(72, 24)
+        self._alpha: float = 0.0
+        self._dy: float = 0.0
+        self._text: str = ""
+        self._font = QFont("Consolas", 9, QFont.Weight.Bold)
+        self._base_color = QColor(169, 182, 101)
+
+    @staticmethod
+    def format_delta(delta: int) -> str:
+        val = int(delta)
+        if val <= 0:
+            return ""
+        if val < 1_000:
+            return f"+{val}"
+        if val < 100_000:
+            return f"+{val / 1000:.1f}k"
+        if val < 1_000_000:
+            return f"+{val / 1000:.0f}k"
+        return f"+{val / 1_000_000:.1f}M"
+
+    def set_base_color(self, color: QColor | str) -> None:
+        col = QColor(color) if not isinstance(color, QColor) else QColor(color)
+        if col.isValid():
+            self._base_color = col
+            if self._alpha > 0.001:
+                self.update()
+
+    def trigger_delta(self, delta: int) -> None:
+        val = int(delta)
+        if val <= 0:
+            return
+        self._text = self.format_delta(val)
+        animator = get_global_animator()
+        if animator.is_paused:
+            self._alpha = 0.0
+            self._dy = 0.0
+            self.update()
+            return
+
+        def _on_update(t: float) -> None:
+            u = max(0.0, min(1.0, float(t)))
+            if u <= 0.15:
+                p = out_quart(u / 0.15)
+                self._alpha = p
+                self._dy = lerp(5.0, 0.0, p)
+            elif u <= 0.65:
+                self._alpha = 1.0
+                self._dy = 0.0
+            else:
+                p = (u - 0.65) / 0.35
+                self._alpha = max(0.0, 1.0 - p)
+                self._dy = lerp(0.0, -6.0, out_quart(p))
+            self.update()
+
+        def _on_finished() -> None:
+            self._alpha = 0.0
+            self._dy = 0.0
+            self.update()
+
+        animator.start_tween(
+            key=f"step_delta_{id(self)}",
+            start_val=0.0,
+            end_val=1.0,
+            duration_ms=1400,
+            easing_fn=lambda x: x,
+            on_update=_on_update,
+            on_finished=_on_finished,
+        )
+
+    def paintEvent(self, event: Any) -> None:  # noqa: N802
+        _ = event
+        if self._alpha <= 0.001 or not self._text:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setFont(self._font)
+
+        fm = QFontMetrics(self._font)
+        text_w = fm.horizontalAdvance(self._text)
+        pill_w = min(float(self.width()) - 2.0, float(text_w + 12))
+        pill_h = 18.0
+        pill_x = 1.0
+        pill_y = (self.height() - pill_h) / 2.0 + self._dy
+        pill_rect = QRectF(pill_x, pill_y, pill_w, pill_h)
+
+        bg_col = QColor(
+            self._base_color.red(),
+            self._base_color.green(),
+            self._base_color.blue(),
+            max(0, min(255, int(35 * self._alpha))),
+        )
+        fg_col = QColor(
+            self._base_color.red(),
+            self._base_color.green(),
+            self._base_color.blue(),
+            max(0, min(255, int(255 * self._alpha))),
+        )
+
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(bg_col))
+        painter.drawRoundedRect(pill_rect, 4.0, 4.0)
+
+        painter.setPen(QPen(fg_col, 1.0))
+        painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, self._text)
+
+
 class SidebarRowWidget(QWidget):
     """
     左侧历史会话单行组件：
@@ -386,6 +851,8 @@ class SidebarRowWidget(QWidget):
         self.file_path = file_path
         self.is_selected = False
         self.is_hovered = False
+        self._hover_alpha: float = 0.0
+        self._select_alpha: float = 1.0 if self.is_selected else 0.0
 
         self._bg_inner = QColor(self.COLOR_BG_INNER)
         self._bg_hover = QColor(self.COLOR_BG_HOVER)
@@ -637,6 +1104,14 @@ class SidebarRowWidget(QWidget):
         self.set_selected(is_selected)
         self._refresh_row_layout_and_elide()
 
+    def _on_hover_alpha_update(self, val: float) -> None:
+        self._hover_alpha = max(0.0, min(1.0, float(val)))
+        self.update()
+
+    def _on_select_alpha_update(self, val: float) -> None:
+        self._select_alpha = max(0.0, min(1.0, float(val)))
+        self.update()
+
     def set_selected(self, is_selected: bool) -> None:
         self.is_selected = is_selected
         if self._last_selected != is_selected:
@@ -645,16 +1120,39 @@ class SidebarRowWidget(QWidget):
             tok_color = "#D8A657" if is_selected else "#A9B665"
             self.tok_lbl.setStyleSheet(f"color: {tok_color}; background: transparent; border: none;")
             self._refresh_row_layout_and_elide()
+            target_alpha = 1.0 if is_selected else 0.0
+            get_global_animator().start_tween(
+                key=f"sb_select_{id(self)}",
+                start_val=self._select_alpha,
+                end_val=target_alpha,
+                duration_ms=180,
+                easing_fn=out_quart,
+                on_update=self._on_select_alpha_update,
+            )
             self.update()
 
     def enterEvent(self, event: Any) -> None:
         self.is_hovered = True
-        self.update()
+        get_global_animator().start_tween(
+            key=f"sb_hover_{id(self)}",
+            start_val=self._hover_alpha,
+            end_val=1.0,
+            duration_ms=120,
+            easing_fn=out_quart,
+            on_update=self._on_hover_alpha_update,
+        )
         super().enterEvent(event)
 
     def leaveEvent(self, event: Any) -> None:
         self.is_hovered = False
-        self.update()
+        get_global_animator().start_tween(
+            key=f"sb_hover_{id(self)}",
+            start_val=self._hover_alpha,
+            end_val=0.0,
+            duration_ms=150,
+            easing_fn=out_quart,
+            on_update=self._on_hover_alpha_update,
+        )
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: Any) -> None:
@@ -666,20 +1164,28 @@ class SidebarRowWidget(QWidget):
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect().adjusted(0, 0, -1, -1)
 
-        if self.is_hovered:
-            bg = self._bg_hover
-        elif self.is_selected:
-            bg = self._bg_selected
-        else:
-            bg = self._bg_inner
+        # 底色平滑插值：inner -> hover -> selected
+        bg = lerp_color(self._bg_inner, self._bg_hover, self._hover_alpha)
+        if self._select_alpha > 0.001:
+            bg = lerp_color(bg, self._bg_selected, self._select_alpha)
 
-        border = self._border_selected if self.is_selected else self._border_normal
+        border = lerp_color(self._border_normal, self._border_selected, self._select_alpha)
+
         painter.fillRect(rect, bg)
         painter.setPen(QPen(border, 1))
         painter.drawRect(rect)
+
+        # 左侧 3px 选中指示胶囊条
+        if self._select_alpha > 0.01:
+            cap_color = QColor(self._border_selected)
+            cap_color.setAlpha(int(round(self._select_alpha * 255)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(cap_color)
+            cap_rect = QRectF(rect.x() + 1.0, rect.y() + 4.0, 3.0, max(2.0, rect.height() - 8.0))
+            painter.drawRoundedRect(cap_rect, 1.5, 1.5)
 
 
 class _CompatLabelAdapter:
@@ -704,6 +1210,7 @@ class _CompatWidgetGeoAdapter:
         self._w = qwidget
 
     def update_idletasks(self) -> None:
+        get_global_animator().stop_all(snap_to_target=True)
         QApplication.processEvents()
 
     def winfo_reqwidth(self) -> int:
@@ -726,3 +1233,294 @@ class _CompatWidgetGeoAdapter:
 
     def winfo_exists(self) -> bool:
         return self._w.isVisible()
+
+
+class IslandPeekPopup(QWidget):
+    """
+    灵动岛折叠胶囊态下的悬停 Peek 迷你预览浮层（260x54px）。
+    纯 QPainter 直绘深色半透明圆角背景与 2x2 核心指标（输入、缓存、输出、思考），
+    由 AnimationCoordinator 驱动 180ms 垂直微滑入 + 淡入、150ms 淡出收回。
+    """
+
+    POPUP_W = 260
+    POPUP_H = 54
+    GAP_PX = 4
+    SLIDE_OFFSET_PX = 4.0
+
+    def __init__(self, hud_window: "TokenHUDWindow", parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._hud = hud_window
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFixedSize(self.POPUP_W, self.POPUP_H)
+
+        self.is_hovered: bool = False
+        self._progress: float = 0.0
+        self._is_showing: bool = False
+        self._anchor_x: int = 0
+        self._anchor_y: int = 0
+        self._expand_upward: bool = False
+
+        # 指标数据缓存
+        self._in_tokens: int = 0
+        self._cache_tokens: int = 0
+        self._cache_rate: float = 0.0
+        self._out_tokens: int = 0
+        self._thought_tokens: int = 0
+        self._is_pinned_mode: bool = False
+
+        # 主题颜色缓存
+        self._bg_color = QColor("#141617")
+        self._bg_color.setAlpha(238)
+        self._cell_bg_color = QColor("#1D2021")
+        self._cell_bg_color.setAlpha(180)
+        self._border_color = QColor("#282828")
+        self._fg_muted = QColor("#928374")
+        self._fg_in = QColor("#D4BE98")
+        self._fg_cache = QColor("#D3869B")
+        self._fg_out = QColor("#D8A657")
+        self._fg_thought = QColor("#E78A4E")
+
+        self._font_label = QFont("Microsoft YaHei UI", 7)
+        self._font_val = QFont("Consolas", 8, QFont.Weight.Bold)
+
+    @property
+    def progress(self) -> float:
+        return self._progress
+
+    def apply_theme(
+        self,
+        bg_main: str,
+        bg_card: str,
+        border_color: str,
+        fg_muted: str,
+        fg_primary: str,
+        fg_purple: str,
+        fg_yellow: str,
+        fg_accent: str,
+    ) -> None:
+        self._bg_color = QColor(bg_main)
+        self._bg_color.setAlpha(240)
+        self._cell_bg_color = QColor(bg_card)
+        self._cell_bg_color.setAlpha(175)
+        self._border_color = QColor(border_color)
+        self._fg_muted = QColor(fg_muted)
+        self._fg_in = QColor(fg_primary)
+        self._fg_cache = QColor(fg_purple)
+        self._fg_out = QColor(fg_yellow)
+        self._fg_thought = QColor(fg_accent)
+        if self.isVisible():
+            self.update()
+
+    def update_metrics(
+        self,
+        in_tokens: int,
+        cache_tokens: int,
+        out_tokens: int,
+        thought_tokens: int,
+        is_pinned: bool = False,
+    ) -> None:
+        in_v = max(0, int(in_tokens))
+        cache_v = max(0, int(cache_tokens))
+        out_v = max(0, int(out_tokens))
+        thought_v = max(0, int(thought_tokens))
+        rate_v = (cache_v * 100.0 / in_v) if in_v > 0 else 0.0
+
+        changed = (
+            self._in_tokens != in_v
+            or self._cache_tokens != cache_v
+            or self._out_tokens != out_v
+            or self._thought_tokens != thought_v
+            or self._is_pinned_mode != bool(is_pinned)
+        )
+        self._in_tokens = in_v
+        self._cache_tokens = cache_v
+        self._cache_rate = rate_v
+        self._out_tokens = out_v
+        self._thought_tokens = thought_v
+        self._is_pinned_mode = bool(is_pinned)
+        if changed and self.isVisible():
+            self.update()
+
+    def compute_anchor_position(self) -> tuple[int, int, bool]:
+        """计算相对于胶囊主窗口的目标锚点坐标 (x, y, expand_upward)。"""
+        hud = self._hud
+        pill_x = int(hud.x())
+        pill_y = int(hud.y())
+        pill_w = int(hud.width())
+        pill_h = int(hud.height())
+
+        target_x = pill_x + (pill_w - self.POPUP_W) // 2
+        below_y = pill_y + pill_h + self.GAP_PX
+        above_y = pill_y - self.POPUP_H - self.GAP_PX
+
+        expand_upward = False
+        try:
+            app = QApplication.instance()
+            screen = (
+                (hud.screen() if hasattr(hud, "screen") else None)
+                or (app.screenAt(hud.geometry().center()) if app and hasattr(app, "screenAt") else None)
+                or (app.primaryScreen() if app and hasattr(app, "primaryScreen") else None)
+            )
+            if screen is not None:
+                avail = screen.availableGeometry()
+                if below_y + self.POPUP_H > avail.bottom() - 4 and above_y >= avail.top() + 4:
+                    expand_upward = True
+                target_x = max(avail.left() + 4, min(target_x, avail.right() - self.POPUP_W - 4))
+        except Exception:
+            pass
+
+        target_y = above_y if expand_upward else below_y
+        return target_x, target_y, expand_upward
+
+    def sync_position(self) -> None:
+        """同步跟随主窗口位置并应用当前动效垂直偏移。"""
+        self._anchor_x, self._anchor_y, self._expand_upward = self.compute_anchor_position()
+        self._apply_animated_geometry()
+
+    def _apply_animated_geometry(self) -> None:
+        # 展开时从偏移 4px 滑入落位：下展时从 -4px 下落到 0；上展时从 +4px 上浮到 0
+        offset_dir = 1.0 if self._expand_upward else -1.0
+        dy = int(round((1.0 - self._progress) * self.SLIDE_OFFSET_PX * offset_dir))
+        self.move(self._anchor_x, self._anchor_y + dy)
+
+    def _on_anim_update(self, val: float) -> None:
+        self._progress = max(0.0, min(1.0, float(val)))
+        self._apply_animated_geometry()
+        self.update()
+
+    def show_peek(self, instant: bool = False) -> None:
+        """触发 180ms 垂直微滑入 + 淡入展示。"""
+        self._is_showing = True
+        self._anchor_x, self._anchor_y, self._expand_upward = self.compute_anchor_position()
+        animator = get_global_animator()
+        if not self.isVisible():
+            self._progress = 1.0 if (instant or animator.is_paused) else 0.0
+            self._apply_animated_geometry()
+            self.show()
+
+        if instant or animator.is_paused:
+            animator.stop_tween(f"island_peek_{id(self)}")
+            self._on_anim_update(1.0)
+            return
+
+        animator.start_tween(
+            key=f"island_peek_{id(self)}",
+            start_val=self._progress,
+            end_val=1.0,
+            duration_ms=180,
+            easing_fn=out_quart,
+            on_update=self._on_anim_update,
+        )
+
+    def hide_peek(self, instant: bool = False) -> None:
+        """触发 150ms 淡出收回，或立即隐藏。"""
+        self._is_showing = False
+        animator = get_global_animator()
+        tween_key = f"island_peek_{id(self)}"
+        if instant or animator.is_paused or not self.isVisible():
+            animator.stop_tween(tween_key)
+            self._progress = 0.0
+            self.is_hovered = False
+            if self.isVisible():
+                self.hide()
+            return
+
+        def _on_hide_done() -> None:
+            if not self._is_showing:
+                self._progress = 0.0
+                self.is_hovered = False
+                self.hide()
+
+        animator.start_tween(
+            key=tween_key,
+            start_val=self._progress,
+            end_val=0.0,
+            duration_ms=150,
+            easing_fn=out_quart,
+            on_update=self._on_anim_update,
+            on_finished=_on_hide_done,
+        )
+
+    def enterEvent(self, event: Any) -> None:
+        self.is_hovered = True
+        if hasattr(self._hud, "_on_peek_popup_enter"):
+            self._hud._on_peek_popup_enter()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        self.is_hovered = False
+        if hasattr(self._hud, "_on_peek_popup_leave"):
+            self._hud._on_peek_popup_leave()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event: Any) -> None:
+        if self._progress <= 0.005:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setOpacity(max(0.0, min(1.0, self._progress * float(getattr(self._hud, "alpha", 0.94)))))
+
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
+        radius = 9.0
+
+        # 外框深色半透明底色与微透边框
+        painter.setBrush(self._bg_color)
+        painter.setPen(QPen(self._border_color, 1.1))
+        painter.drawRoundedRect(rect, radius, radius)
+
+        # 内部 2x2 紧凑单元格布局
+        pad_x = 7.0
+        pad_y = 5.0
+        gap_x = 6.0
+        gap_y = 4.0
+        inner_w = rect.width() - pad_x * 2.0
+        inner_h = rect.height() - pad_y * 2.0
+        cell_w = (inner_w - gap_x) * 0.5
+        cell_h = (inner_h - gap_y) * 0.5
+
+        in_str = format_compact_tokens(self._in_tokens)
+        cache_pct = int(round(self._cache_rate))
+        cache_str = f"{format_compact_tokens(self._cache_tokens)} ({cache_pct}%)"
+        out_str = format_compact_tokens(self._out_tokens)
+        thought_str = format_compact_tokens(self._thought_tokens)
+
+        cells = [
+            (0, 0, "输入", in_str, self._fg_in),
+            (0, 1, "缓存", cache_str, self._fg_cache),
+            (1, 0, "输出", out_str, self._fg_out),
+            (1, 1, "思考", thought_str, self._fg_thought),
+        ]
+
+        for r_idx, c_idx, label_txt, val_txt, val_col in cells:
+            cx = rect.left() + pad_x + c_idx * (cell_w + gap_x)
+            cy = rect.top() + pad_y + r_idx * (cell_h + gap_y)
+            c_rect = QRectF(cx, cy, cell_w, cell_h)
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(self._cell_bg_color)
+            painter.drawRoundedRect(c_rect, 4.5, 4.5)
+
+            text_rect = c_rect.adjusted(6.0, 0.0, -6.0, 0.0)
+            painter.setFont(self._font_label)
+            painter.setPen(self._fg_muted)
+            painter.drawText(
+                text_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                label_txt,
+            )
+
+            painter.setFont(self._font_val)
+            painter.setPen(val_col)
+            painter.drawText(
+                text_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                val_txt,
+            )
+

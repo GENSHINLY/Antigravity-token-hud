@@ -16,10 +16,12 @@ import hud_core as _hud_core  # noqa: E402
 from hud_core import (  # noqa: E402,F401
     ANTIGRAVITY_BRAIN_ROOT, DEFAULT_CONFIG, DEFAULT_MODEL_PRICING_PER_1M,
     DEFAULT_USD_TO_CNY_RATE, GEMINI_ROOT, GEMINI_TMP_ROOT, LIVE_STATE_FILE,
-    MUTEX_NAME, PARSER_REGISTRY, THEME_PRESETS, AntigravityBrainParser,
-    ClaudeCodeSessionParser, ConfigManager, GeminiCliSessionParser,
+    MUTEX_NAME, PARSER_REGISTRY, THEME_PRESETS, AnimatedNumberLabel,
+    AntigravityBrainParser, ClaudeCodeSessionParser, ConfigManager,
+    GeminiCliSessionParser, IslandPeekPopup, MetricCellWidget,
     ResizeGripWidget, SettingsDialog, SidebarRowWidget, SplitterHandleWidget,
-    TokenHUDWindow, TokenMonitorCache, TokenPricingEngine, _CompatLabelAdapter,
+    StatusIndicatorWidget, StepDeltaBadgeWidget, TokenHUDWindow,
+    TokenMonitorCache, TokenPricingEngine, _CompatLabelAdapter,
     _CompatWidgetGeoAdapter, _derive_theme_palette, _discover_antigravity_files,
     _discover_claude_code_files, _discover_gemini_cli_files,
     _extract_user_prompt_first_line, _HEX_COLOR_RE, _hex_to_rgba_css, _HoverLabel,
@@ -35,7 +37,7 @@ from hud_core import (  # noqa: E402,F401
     run_self_test, sanitize_snapshot_for_output,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 __all__ = list(_hud_core.__all__)
 if "__version__" not in __all__:
@@ -51,7 +53,7 @@ def main() -> None:
         "--version",
         action="version",
         version=f"Token HUD v{__version__}",
-        help="显示程序版本号 (1.2.0) 并退出",
+        help=f"显示程序版本号 ({__version__}) 并退出",
     )
     parser.add_argument("-s", "--session", help="指定优先锁定的会话 ID（前缀或完整 ID）")
     parser.add_argument("-p", "--project", help="指定优先过滤的项目目录名")

@@ -4,6 +4,10 @@
   "poll_interval_ms": 1000,
   "scan_ttl_sec": 2.5,
   "hotkey": "Ctrl+Alt+T",
+  "enable_animations": true,
+  "window_mode": "full",
+  "window_x": null,
+  "window_y": null,
   "auto_update_pricing": true,
   "proxy": "",
   "usd_to_cny_rate": 7.25,
@@ -131,6 +135,7 @@
     "card_bg_color": "#1D2021",
     "border_color": "#3C3836",
     "opacity": 0.94,
+    "bg_opacity": 0.65,
     "backdrop": "mica"
   }
 }

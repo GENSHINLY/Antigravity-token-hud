@@ -167,13 +167,19 @@ def resolve_top_level_hwnd(widget_or_hwnd: Any) -> int:
 
 
 def apply_win11_mica_and_rounded_corners(
-    window: Any, backdrop_type: str = "mica"
+    window: Any, backdrop_type: str = "mica", is_island: bool = False
 ) -> dict[str, Any]:
     """
     对顶层窗口应用 Windows 11 原生暗色模式、圆角与 DWM 背景材质属性：
-    - DwmExtendFrameIntoClientArea: MARGINS(-1, -1, -1, -1) 扩展至全客户区
-    - DWMWA_USE_IMMERSIVE_DARK_MODE (20) = 1
-    - DWMWA_WINDOW_CORNER_PREFERENCE (33) = 2 (DWMWCP_ROUND)
+    - 展开态 (is_island=False):
+      - DwmExtendFrameIntoClientArea: MARGINS(-1, -1, -1, -1) 扩展至全客户区
+      - DWMWA_USE_IMMERSIVE_DARK_MODE (20) = 1
+      - DWMWA_WINDOW_CORNER_PREFERENCE (33) = 2 (DWMWCP_ROUND)
+      - DWMWA_BORDER_COLOR (34) = 0xFFFFFFFF (DWMWA_COLOR_DEFAULT)
+    - 胶囊态/变形态 (is_island=True):
+      - DwmExtendFrameIntoClientArea: MARGINS(0, 0, 0, 0)
+      - DWMWA_WINDOW_CORNER_PREFERENCE (33) = 1 (DWMWCP_DONOTROUND)
+      - DWMWA_BORDER_COLOR (34) = 0xFFFFFFFE (DWMWA_COLOR_NONE)
     - DWMWA_SYSTEMBACKDROP_TYPE (38):
       - "none" -> 1 (DWMSBT_NONE)
       - "mica" -> 2 (DWMSBT_MAINWINDOW)
@@ -186,7 +192,7 @@ def apply_win11_mica_and_rounded_corners(
         "acrylic": 3,
         "mica_alt": 4,
     }
-    norm_backdrop = str(backdrop_type or "mica").strip().lower()
+    norm_backdrop = "none" if is_island else str(backdrop_type or "mica").strip().lower()
     if norm_backdrop not in backdrop_map:
         norm_backdrop = "mica"
     backdrop_val = backdrop_map[norm_backdrop]
@@ -195,6 +201,7 @@ def apply_win11_mica_and_rounded_corners(
         "hwnd": 0,
         "dark_mode": False,
         "rounded": False,
+        "border_none": False,
         "mica": False,
         "extended_frame": False,
         "backdrop": norm_backdrop,
@@ -220,15 +227,19 @@ def apply_win11_mica_and_rounded_corners(
         if wid and wid not in hwnd_candidates:
             hwnd_candidates.append(wid)
 
-        margins = _MARGINS(-1, -1, -1, -1)
+        m_val = 0 if is_island else -1
+        margins = _MARGINS(m_val, m_val, m_val, m_val)
+        corner_pref = 1 if is_island else 2
+        border_color = 0xFFFFFFFE if is_island else 0xFFFFFFFF
+
         for hwnd in hwnd_candidates:
             result["hwnd"] = hwnd
-            # 0. 将 DWM 玻璃边框扩展至全客户区
+            # 0. DWM 玻璃边框扩展控制
             hr_ext = dwmapi.DwmExtendFrameIntoClientArea(
                 hwnd, ctypes.byref(margins)
             )
             if hr_ext == 0:
-                result["extended_frame"] = True
+                result["extended_frame"] = not is_island
 
             # 1. 沉浸式暗色模式 (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
             hr_dark = dwmapi.DwmSetWindowAttribute(
@@ -237,14 +248,21 @@ def apply_win11_mica_and_rounded_corners(
             if hr_dark == 0:
                 result["dark_mode"] = True
 
-            # 2. 原生圆角 (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
+            # 2. 原生圆角 (DWMWA_WINDOW_CORNER_PREFERENCE = 33: 1=DONOTROUND, 2=ROUND)
             hr_round = dwmapi.DwmSetWindowAttribute(
-                hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4
+                hwnd, 33, ctypes.byref(ctypes.c_int(corner_pref)), 4
             )
             if hr_round == 0:
-                result["rounded"] = True
+                result["rounded"] = not is_island
 
-            # 3. 系统背景材质 (DWMWA_SYSTEMBACKDROP_TYPE = 38)
+            # 3. 窗口系统边框颜色 (DWMWA_BORDER_COLOR = 34: 0xFFFFFFFE=NONE, 0xFFFFFFFF=DEFAULT)
+            hr_border = dwmapi.DwmSetWindowAttribute(
+                hwnd, 34, ctypes.byref(ctypes.c_uint32(border_color)), 4
+            )
+            if hr_border == 0:
+                result["border_none"] = is_island
+
+            # 4. 系统背景材质 (DWMWA_SYSTEMBACKDROP_TYPE = 38)
             hr_backdrop = dwmapi.DwmSetWindowAttribute(
                 hwnd, 38, ctypes.byref(ctypes.c_int(backdrop_val)), 4
             )

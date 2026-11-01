@@ -4,8 +4,21 @@ hud_core - Token HUD 核心模块化包。
 """
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
+from .animations import (
+    AnimationCoordinator,
+    LoopTask,
+    TweenTask,
+    get_global_animator,
+    in_out_cubic,
+    lerp,
+    lerp_color,
+    out_back,
+    out_quart,
+    probe_screen_refresh_rate,
+    sine_breath,
+)
 from .config import (
     ANTIGRAVITY_BRAIN_ROOT,
     DEFAULT_CONFIG,
@@ -66,9 +79,14 @@ from .settings_dialog import (
     _probe_sub_agent_status,
 )
 from .ui_widgets import (
+    AnimatedNumberLabel,
+    IslandPeekPopup,
+    MetricCellWidget,
     ResizeGripWidget,
     SidebarRowWidget,
     SplitterHandleWidget,
+    StatusIndicatorWidget,
+    StepDeltaBadgeWidget,
     _CompatLabelAdapter,
     _CompatWidgetGeoAdapter,
     _HoverLabel,
@@ -92,6 +110,8 @@ from .win32_dwm import (
 __all__ = [
     "__version__",
     "ANTIGRAVITY_BRAIN_ROOT",
+    "AnimatedNumberLabel",
+    "AnimationCoordinator",
     "AntigravityBrainParser",
     "CSV_FIELDNAMES",
     "ClaudeCodeSessionParser",
@@ -103,18 +123,24 @@ __all__ = [
     "GEMINI_ROOT",
     "GEMINI_TMP_ROOT",
     "GeminiCliSessionParser",
+    "IslandPeekPopup",
     "LIVE_STATE_FILE",
+    "LoopTask",
     "MODEL_PRICING_PRESETS",
     "MUTEX_NAME",
+    "MetricCellWidget",
     "PARSER_REGISTRY",
     "ResizeGripWidget",
     "SettingsDialog",
     "SidebarRowWidget",
     "SplitterHandleWidget",
+    "StatusIndicatorWidget",
+    "StepDeltaBadgeWidget",
     "THEME_PRESETS",
     "TokenHUDWindow",
     "TokenMonitorCache",
     "TokenPricingEngine",
+    "TweenTask",
     "_CompatLabelAdapter",
     "_CompatWidgetGeoAdapter",
     "_HEX_COLOR_RE",
@@ -144,12 +170,20 @@ __all__ = [
     "format_num",
     "format_short_time",
     "get_default_pricing_config",
+    "get_global_animator",
+    "in_out_cubic",
+    "lerp",
+    "lerp_color",
+    "out_back",
+    "out_quart",
     "parse_antigravity_transcript",
     "parse_claude_code_session",
     "parse_iso_timestamp",
     "parse_session_jsonl",
+    "probe_screen_refresh_rate",
     "reset_session_today_stats",
     "resolve_top_level_hwnd",
     "run_self_test",
     "sanitize_snapshot_for_output",
+    "sine_breath",
 ]

@@ -22,6 +22,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QColorDialog
 
+from .animations import get_global_animator, lerp, lerp_color, out_quart, sine_breath
 from .config import DEFAULT_CONFIG, THEME_PRESETS, ConfigManager, auto_detect_antigravity_path
 from .hud_window import TokenHUDWindow
 from .monitor import CSV_FIELDNAMES, TokenMonitorCache, export_history_to_csv
@@ -54,6 +55,7 @@ from .pricing import (
     safe_fetch_json,
 )
 from .settings_dialog import SettingsDialog
+from .ui_widgets import StepDeltaBadgeWidget
 from .win32_dwm import (
     apply_win11_mica_and_rounded_corners,
     bind_interactive_desktop,
@@ -2094,6 +2096,131 @@ def run_self_test(
         "history_persistence_and_csv_ok": history_persistence_and_csv_ok,
     }
 
+    # ------------------------------------------------------------------
+    # 11. v1.3 第四阶段自检：动效协调器与插值原语、增量徽章格式化、灵动岛形态切换与配置项校验
+    # ------------------------------------------------------------------
+    # 11.1 动效协调器与插值原语测试
+    animator = get_global_animator()
+    was_paused = animator.is_paused
+    if was_paused:
+        animator.resume_animations()
+
+    lerp_ok = abs(lerp(10.0, 20.0, 0.5) - 15.0) < 1e-6
+    mid_col = lerp_color("#000000", "#ffffff", 0.5)
+    lerp_color_ok = isinstance(mid_col, QColor) and mid_col.isValid() and 126 <= mid_col.red() <= 129
+    sine_breath_ok = abs(sine_breath(0.0) - 0.0) < 1e-6 and abs(sine_breath(0.5) - 1.0) < 1e-6
+    out_quart_ok = abs(out_quart(0.0) - 0.0) < 1e-6 and abs(out_quart(1.0) - 1.0) < 1e-6 and out_quart(0.5) > 0.9
+    non_existent_loop_ok = animator.is_loop_running("non_existent_key") is False
+
+    test_loop_key = "__selftest_loop_preserve_start_time__"
+    animator.stop_loop(test_loop_key)
+    loop_task_1 = animator.start_loop(test_loop_key, 1200, lambda _p: None)
+    orig_loop_start_time = loop_task_1.start_time
+    time.sleep(0.005)
+    loop_task_2 = animator.start_loop(test_loop_key, 1500, lambda _p: None)
+    loop_preserve_start_ok = (
+        loop_task_2 is loop_task_1
+        and loop_task_2.start_time == orig_loop_start_time
+        and loop_task_2.duration_ms == 1500
+    )
+    animator.stop_loop(test_loop_key)
+    if was_paused:
+        animator.pause_animations()
+
+    animator_and_primitives_ok = bool(
+        lerp_ok
+        and lerp_color_ok
+        and sine_breath_ok
+        and out_quart_ok
+        and non_existent_loop_ok
+        and loop_preserve_start_ok
+    )
+    assert animator_and_primitives_ok, "phase4_test: 动效协调器与插值原语断言失败"
+
+    # 11.2 增量徽章格式化断言
+    delta_badge_format_ok = (
+        StepDeltaBadgeWidget.format_delta(0) == ""
+        and StepDeltaBadgeWidget.format_delta(500) == "+500"
+        and StepDeltaBadgeWidget.format_delta(12400) == "+12.4k"
+        and StepDeltaBadgeWidget.format_delta(1500000) == "+1.5M"
+    )
+    assert delta_badge_format_ok, "phase4_test: StepDeltaBadgeWidget.format_delta 格式化断言失败"
+
+    # 11.3 灵动岛形态切换与防越界断言
+    hud.showNormal()
+    hud.show()
+    QApplication.processEvents()
+    if hud._is_island_mode:
+        hud.toggle_island_mode(instant=True)
+        QApplication.processEvents()
+
+    hud.toggle_island_mode(instant=True)
+    QApplication.processEvents()
+    island_collapsed_ok = (
+        hud._is_island_mode is True
+        and hud.width() == 260
+        and hud.height() == 34
+        and hud.island_badge_lbl.isVisible() is True
+        and hud.body_frame.isVisible() is False
+    )
+    assert island_collapsed_ok, "phase4_test: 灵动岛瞬时折叠尺寸与显隐断言失败"
+
+    hud.toggle_island_mode(instant=True)
+    QApplication.processEvents()
+    screen_obj = (
+        (hud.screen() if hasattr(hud, "screen") else None)
+        or hud._app.screenAt(hud.geometry().center())
+        or hud._app.primaryScreen()
+    )
+    avail_rect = screen_obj.availableGeometry()
+    exp_x, exp_y, exp_w, exp_h = hud.x(), hud.y(), hud.width(), hud.height()
+    within_avail_bounds_ok = (
+        exp_x >= avail_rect.left()
+        and exp_y >= avail_rect.top()
+        and (exp_x + exp_w) <= (avail_rect.right() + 1)
+        and (exp_y + exp_h) <= (avail_rect.bottom() + 1)
+    )
+    island_expanded_ok = (
+        hud._is_island_mode is False
+        and hud.body_frame.isVisible() is True
+        and hud.island_badge_lbl.isVisible() is False
+        and within_avail_bounds_ok
+    )
+    assert island_expanded_ok, "phase4_test: 灵动岛瞬时展开与屏幕安全边界断言失败"
+
+    # 11.4 配置项校验断言
+    norm_island = ConfigManager.normalize_config(
+        {"window_mode": "  ISLAND ", "window_x": 320, "window_y": 180}
+    )
+    norm_full_fallback = ConfigManager.normalize_config(
+        {"window_mode": "invalid_mode", "window_x": "bad_x", "window_y": True}
+    )
+    config_window_mode_and_pos_ok = (
+        norm_island.get("window_mode") == "island"
+        and norm_island.get("window_x") == 320
+        and norm_island.get("window_y") == 180
+        and norm_full_fallback.get("window_mode") == "full"
+        and norm_full_fallback.get("window_x") is None
+        and norm_full_fallback.get("window_y") is None
+    )
+    assert config_window_mode_and_pos_ok, "phase4_test: normalize_config 对 window_mode 及坐标校验断言失败"
+
+    phase4_v13_animation_and_island_test = {
+        "passed": bool(
+            animator_and_primitives_ok
+            and delta_badge_format_ok
+            and island_collapsed_ok
+            and island_expanded_ok
+            and config_window_mode_and_pos_ok
+        ),
+        "animator_and_primitives_ok": animator_and_primitives_ok,
+        "delta_badge_format_ok": delta_badge_format_ok,
+        "island_collapsed_ok": island_collapsed_ok,
+        "island_expanded_ok": island_expanded_ok,
+        "within_avail_bounds_ok": within_avail_bounds_ok,
+        "config_window_mode_and_pos_ok": config_window_mode_and_pos_ok,
+    }
+
     all_main = snap.pop("all_main_sessions", [])
     all_sub = snap.pop("all_sub_sessions", [])
     raw_sba = snap.get("sessions_by_agent", {})
@@ -2153,6 +2280,7 @@ def run_self_test(
     snap["settings_test"] = theme_and_settings_test
     snap["phase2_io_and_perf_test"] = phase2_io_and_perf_test
     snap["phase3_feature_test"] = phase3_feature_test
+    snap["phase4_v13_animation_and_island_test"] = phase4_v13_animation_and_island_test
     hud.close()
     sample_sanitized = sanitize_snapshot_for_output(
         {
