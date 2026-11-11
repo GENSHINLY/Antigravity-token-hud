@@ -1,6 +1,6 @@
 {
   "version": "1.2.0",
-  "updated_at": "2026-10-29",
+  "updated_at": "2026-11-11",
   "usd_to_cny_rate": 7.25,
   "pricing": {
     "gemini-3.8-flash": {
@@ -12,6 +12,12 @@
     "gemini-3.8-pro": {
       "input": 1.25,
       "cached": 0.3125,
+      "output": 10.0,
+      "thought": 10.0
+    },
+    "gemini-4-carbon": {
+      "input": 2.0,
+      "cached": 0.1,
       "output": 10.0,
       "thought": 10.0
     },

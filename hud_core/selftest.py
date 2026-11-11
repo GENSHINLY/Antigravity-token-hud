@@ -1890,6 +1890,7 @@ def run_self_test(
             "Gemini 3.8 Flash",
             "Gemini 3.8 Pro",
             "Gemini 4 Argon",
+            "Gemini 4 Carbon",
             "Gemini 2.5 Pro",
             "Gemini 2.5 Flash",
             "Gemini 2.0 Flash",
@@ -2221,6 +2222,89 @@ def run_self_test(
         "config_window_mode_and_pos_ok": config_window_mode_and_pos_ok,
     }
 
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 12. 多模型分段计费自检：单会话切换模型时的分段折算与跨天清零
+    # ------------------------------------------------------------------
+    with tempfile.TemporaryDirectory(prefix="token_hud_multimodel_test_") as mm_tmp_str:
+        mm_tmp = Path(mm_tmp_str)
+        pricing_eng = TokenPricingEngine()
+
+        # (1) 主 Agent 多模型切换测试
+        mm_trans = mm_tmp / "transcript.jsonl"
+        t_base = datetime.datetime.now()
+        iso_t1 = (t_base - datetime.timedelta(seconds=40)).isoformat()
+        iso_t2 = (t_base - datetime.timedelta(seconds=30)).isoformat()
+        iso_t3 = (t_base - datetime.timedelta(seconds=20)).isoformat()
+        iso_t4 = (t_base - datetime.timedelta(seconds=10)).isoformat()
+
+        rec1 = {"step_index": 1, "type": "USER_INPUT", "created_at": iso_t1, "content": "<USER_REQUEST>测试轻量模型</USER_REQUEST>\nModel Selection: Changed to gemini-2.5-flash."}
+        rec2 = {"step_index": 2, "type": "PLANNER_RESPONSE", "created_at": iso_t2, "input_tokens": 10000, "cache_read_tokens": 5000, "output_tokens": 2000, "thinking_tokens": 100}
+        rec3 = {"step_index": 3, "type": "USER_INPUT", "created_at": iso_t3, "content": "<USER_REQUEST>切换至高阶模型</USER_REQUEST>\nModel Selection: Changed to gemini-4-argon."}
+        rec4 = {"step_index": 4, "type": "PLANNER_RESPONSE", "created_at": iso_t4, "input_tokens": 20000, "cache_read_tokens": 10000, "output_tokens": 4000, "thinking_tokens": 200}
+
+        mm_trans.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in (rec1, rec2, rec3, rec4)) + "\n", encoding="utf-8")
+        st_mm = AntigravityBrainParser.create_state(mm_trans)
+        info_mm = AntigravityBrainParser.parse(mm_trans, state=st_mm)
+
+        assert info_mm["model"] == "gemini-4-argon", "多模型测试: 最新模型记录失败"
+        assert "gemini-2.5-flash" in info_mm["by_model"], "多模型测试: by_model 缺失第一阶段模型"
+        assert "gemini-4-argon" in info_mm["by_model"], "多模型测试: by_model 缺失第二阶段模型"
+
+        flash_cost = pricing_eng.calculate_cost(input_tokens=15000, cached_tokens=5000, output_tokens=2000, thought_tokens=100, model_name="gemini-2.5-flash")
+        argon_cost = pricing_eng.calculate_cost(input_tokens=30000, cached_tokens=10000, output_tokens=4000, thought_tokens=200, model_name="gemini-4-argon")
+        expected_mm_usd = round(flash_cost["usd"] + argon_cost["usd"], 6)
+
+        assert abs(float(info_mm["cost_usd"]) - expected_mm_usd) < 1e-5, f"多模型测试: 分段计费不匹配 ({info_mm['cost_usd']} vs {expected_mm_usd})"
+        assert abs(float(info_mm["today_cost_usd"]) - expected_mm_usd) < 1e-5, f"多模型测试: 今日分段计费不匹配 ({info_mm['today_cost_usd']} vs {expected_mm_usd})"
+
+        # 验证跨天清零
+        reset_session_today_stats(info_mm, st_mm, today_date=datetime.date.today() + datetime.timedelta(days=1))
+        assert info_mm["today_cost_usd"] == 0.0, "多模型测试: 跨天归零后 today_cost_usd 未归零"
+        assert abs(float(info_mm["total_cost_usd"]) - expected_mm_usd) < 1e-5, "多模型测试: 跨天归零后 total_cost_usd 丢失"
+        assert info_mm["by_model"]["gemini-2.5-flash"]["today_input_tokens"] == 0, "多模型测试: by_model today 字段未归零"
+
+        # (2) Gemini CLI 多模型切换与同 msg_id 流式覆写测试
+        cli_sess = mm_tmp / "session-cli.jsonl"
+        cli_t1 = {"type": "user", "timestamp": iso_t1, "content": "hello cli"}
+        cli_t2_part = {"type": "gemini", "id": "m1", "timestamp": iso_t2, "tokens": {"input": 5000, "output": 200, "cached": 1000, "thoughts": 100}}
+        cli_t2 = {"type": "gemini", "id": "m1", "timestamp": iso_t2, "model": "gemini-2.5-flash", "tokens": {"input": 10000, "output": 1000, "cached": 2000, "thoughts": 500}}
+        cli_t3 = {"type": "user", "timestamp": iso_t3, "content": "switch to pro"}
+        cli_t4 = {"type": "gemini", "id": "m2", "timestamp": iso_t4, "model": "gemini-3.8-pro", "tokens": {"input": 8000, "output": 800, "cached": 1000, "thoughts": 200}}
+        cli_sess.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in (cli_t1, cli_t2_part, cli_t2, cli_t3, cli_t4)) + "\n", encoding="utf-8")
+
+        cli_st = GeminiCliSessionParser.create_state(cli_sess)
+        cli_info = GeminiCliSessionParser.parse(cli_sess, state=cli_st)
+        assert cli_info["by_model"].get("unknown", {}).get("total_tokens", 0) == 0, "多模型测试: 流式覆写未扣减初始 unknown 桶"
+        assert cli_info["by_model"]["gemini-2.5-flash"]["input_tokens"] == 10000, "多模型测试: CLI 流式覆写后 flash token 统计异常"
+        assert cli_info["by_model"]["gemini-3.8-pro"]["input_tokens"] == 8000, "多模型测试: CLI pro token 统计异常"
+        cli_flash_cost = pricing_eng.calculate_cost(input_tokens=10000, cached_tokens=2000, output_tokens=1000, thought_tokens=500, model_name="gemini-2.5-flash")
+        cli_pro_cost = pricing_eng.calculate_cost(input_tokens=8000, cached_tokens=1000, output_tokens=800, thought_tokens=200, model_name="gemini-3.8-pro")
+        expected_cli_usd = round(cli_flash_cost["usd"] + cli_pro_cost["usd"], 6)
+        assert abs(float(cli_info["cost_usd"]) - expected_cli_usd) < 1e-5, f"多模型测试: CLI 分段计费不匹配 ({cli_info['cost_usd']} vs {expected_cli_usd})"
+
+        # (3) Claude Code 多模型切换与流式覆写测试
+        cc_sess = mm_tmp / "claude-mm.jsonl"
+        cc_t1 = {"type": "assistant", "timestamp": iso_t1, "message": {"id": "cm1", "role": "assistant", "model": "claude-3-7-sonnet-20250219", "usage": {"input_tokens": 2000, "cache_read_input_tokens": 500, "output_tokens": 300}}}
+        cc_t1_final = {"type": "assistant", "timestamp": iso_t2, "message": {"id": "cm1", "role": "assistant", "model": "claude-3-7-sonnet-20250219", "usage": {"input_tokens": 4000, "cache_read_input_tokens": 1000, "output_tokens": 600}}}
+        cc_t2 = {"type": "assistant", "timestamp": iso_t3, "message": {"id": "cm2", "role": "assistant", "model": "claude-opus-4-6", "usage": {"input_tokens": 5000, "cache_read_input_tokens": 2000, "output_tokens": 1000}}}
+        cc_sess.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in (cc_t1, cc_t1_final, cc_t2)) + "\n", encoding="utf-8")
+
+        cc_st = ClaudeCodeSessionParser.create_state(cc_sess)
+        cc_info = ClaudeCodeSessionParser.parse(cc_sess, state=cc_st)
+        sonnet_cost = pricing_eng.calculate_cost(input_tokens=5000, cached_tokens=1000, output_tokens=600, thought_tokens=0, model_name="claude-3-7-sonnet-20250219")
+        opus_cost = pricing_eng.calculate_cost(input_tokens=7000, cached_tokens=2000, output_tokens=1000, thought_tokens=0, model_name="claude-opus-4-6")
+        expected_cc_usd = round(sonnet_cost["usd"] + opus_cost["usd"], 6)
+        assert abs(float(cc_info["cost_usd"]) - expected_cc_usd) < 1e-5, f"多模型测试: Claude Code 分段计费不匹配 ({cc_info['cost_usd']} vs {expected_cc_usd})"
+
+    multi_model_pricing_test = {
+        "passed": True,
+        "antigravity_multimodel_ok": True,
+        "midnight_reset_ok": True,
+        "cli_multimodel_ok": True,
+        "claude_multimodel_ok": True,
+    }
+
     all_main = snap.pop("all_main_sessions", [])
     all_sub = snap.pop("all_sub_sessions", [])
     raw_sba = snap.get("sessions_by_agent", {})
@@ -2281,6 +2365,7 @@ def run_self_test(
     snap["phase2_io_and_perf_test"] = phase2_io_and_perf_test
     snap["phase3_feature_test"] = phase3_feature_test
     snap["phase4_v13_animation_and_island_test"] = phase4_v13_animation_and_island_test
+    snap["multi_model_pricing_test"] = multi_model_pricing_test
     hud.close()
     sample_sanitized = sanitize_snapshot_for_output(
         {

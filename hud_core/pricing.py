@@ -26,6 +26,7 @@ REMOTE_PRICING_ENDPOINTS: tuple[str, ...] = (
 MODEL_PRICING_PRESETS: list[tuple[str, str]] = [
     ("gemini-3.8-flash", "Gemini 3.8 Flash"),
     ("gemini-3.8-pro", "Gemini 3.8 Pro"),
+    ("gemini-4-carbon", "Gemini 4 Carbon"),
     ("gemini-4-argon", "Gemini 4 Argon"),
     ("gemini-3.1-pro", "Gemini 3.1 Pro"),
     ("gemini-3.1-flash", "Gemini 3.1 Flash"),
@@ -64,6 +65,12 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
     "gemini-3.8-pro": {
         "input": 1.25,
         "cached": 0.3125,
+        "output": 10.00,
+        "thought": 10.00,
+    },
+    "gemini-4-carbon": {
+        "input": 2.00,
+        "cached": 0.10,
         "output": 10.00,
         "thought": 10.00,
     },
@@ -436,6 +443,10 @@ class TokenPricingEngine:
         if "flash" in norm:
             return self.pricing_table.get(
                 "gemini-3.8-flash", DEFAULT_MODEL_PRICING_PER_1M["gemini-3.8-flash"]
+            )
+        if "carbon" in norm:
+            return self.pricing_table.get(
+                "gemini-4-carbon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-carbon"]
             )
         if "argon" in norm:
             return self.pricing_table.get(

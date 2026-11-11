@@ -62,8 +62,94 @@ def _extract_user_prompt_first_line(content: Any) -> str:
     return ""
 
 
+def _accumulate_model_tokens(
+    info: dict[str, Any],
+    model_name: str,
+    in_t: int = 0,
+    cached_t: int = 0,
+    out_t: int = 0,
+    thought_t: int = 0,
+    tot_t: int = 0,
+    sign: int = 1,
+    is_today: bool = False,
+) -> None:
+    """按模型名称累加或扣减分模型 Token 统计。"""
+    eff_model = str(model_name or info.get("model") or "unknown").strip() or "unknown"
+    if "by_model" not in info or not isinstance(info["by_model"], dict):
+        info["by_model"] = {}
+    by_model: dict[str, dict[str, int]] = info["by_model"]
+    if eff_model not in by_model:
+        by_model[eff_model] = {
+            "input_tokens": 0,
+            "cached_tokens": 0,
+            "output_tokens": 0,
+            "thought_tokens": 0,
+            "total_tokens": 0,
+            "today_input_tokens": 0,
+            "today_cached_tokens": 0,
+            "today_output_tokens": 0,
+            "today_thought_tokens": 0,
+            "today_total_tokens": 0,
+        }
+    m_dict = by_model[eff_model]
+    m_dict["input_tokens"] = max(0, m_dict["input_tokens"] + sign * in_t)
+    m_dict["cached_tokens"] = max(0, m_dict["cached_tokens"] + sign * cached_t)
+    m_dict["output_tokens"] = max(0, m_dict["output_tokens"] + sign * out_t)
+    m_dict["thought_tokens"] = max(0, m_dict["thought_tokens"] + sign * thought_t)
+    m_dict["total_tokens"] = max(0, m_dict["total_tokens"] + sign * tot_t)
+
+    if is_today:
+        m_dict["today_input_tokens"] = max(0, m_dict["today_input_tokens"] + sign * in_t)
+        m_dict["today_cached_tokens"] = max(0, m_dict["today_cached_tokens"] + sign * cached_t)
+        m_dict["today_output_tokens"] = max(0, m_dict["today_output_tokens"] + sign * out_t)
+        m_dict["today_thought_tokens"] = max(0, m_dict["today_thought_tokens"] + sign * thought_t)
+        m_dict["today_total_tokens"] = max(0, m_dict["today_total_tokens"] + sign * tot_t)
+
+
 def _update_session_pricing(info: dict[str, Any]) -> None:
-    """根据当前会话累计与今日累计 Token 刷新折算成本字段。"""
+    """根据当前会话分模型统计（或全局累计）与今日统计刷新折算成本字段。"""
+    by_model = info.get("by_model")
+    if isinstance(by_model, dict) and by_model:
+        tot_usd = 0.0
+        tot_cny = 0.0
+        today_usd = 0.0
+        today_cny = 0.0
+        for m_name, m_stats in by_model.items():
+            if not isinstance(m_stats, dict):
+                continue
+            m_tot = _PRICING_ENGINE.calculate_cost(
+                input_tokens=int(m_stats.get("input_tokens", 0) or 0),
+                cached_tokens=int(m_stats.get("cached_tokens", 0) or 0),
+                output_tokens=int(m_stats.get("output_tokens", 0) or 0),
+                thought_tokens=int(m_stats.get("thought_tokens", 0) or 0),
+                model_name=m_name,
+            )
+            tot_usd += m_tot["usd"]
+            tot_cny += m_tot["cny"]
+
+            m_today = _PRICING_ENGINE.calculate_cost(
+                input_tokens=int(m_stats.get("today_input_tokens", 0) or 0),
+                cached_tokens=int(m_stats.get("today_cached_tokens", 0) or 0),
+                output_tokens=int(m_stats.get("today_output_tokens", 0) or 0),
+                thought_tokens=int(m_stats.get("today_thought_tokens", 0) or 0),
+                model_name=m_name,
+            )
+            today_usd += m_today["usd"]
+            today_cny += m_today["cny"]
+
+        tot_usd = round(tot_usd, 6)
+        tot_cny = round(tot_cny, 6)
+        today_usd = round(today_usd, 6)
+        today_cny = round(today_cny, 6)
+        info["cost_usd"] = tot_usd
+        info["cost_cny"] = tot_cny
+        info["total_cost_usd"] = tot_usd
+        info["total_cost_cny"] = tot_cny
+        info["today_cost_usd"] = today_usd
+        info["today_cost_cny"] = today_cny
+        return
+
+    # 回退到单模型计算（兼容旧状态或未设置 by_model 的情况）
     model_name = str(info.get("model") or "")
     tot_cost = _PRICING_ENGINE.calculate_cost(
         input_tokens=int(info.get("input_tokens", 0) or 0),
@@ -113,6 +199,16 @@ def reset_session_today_stats(
     info["today_cost_usd"] = 0.0
     info["today_cost_cny"] = 0.0
 
+    by_model = info.get("by_model")
+    if isinstance(by_model, dict):
+        for m_stats in by_model.values():
+            if isinstance(m_stats, dict):
+                m_stats["today_input_tokens"] = 0
+                m_stats["today_cached_tokens"] = 0
+                m_stats["today_output_tokens"] = 0
+                m_stats["today_thought_tokens"] = 0
+                m_stats["today_total_tokens"] = 0
+
     if isinstance(state, dict):
         state["today_date"] = target_date
         state["bytes_read_last"] = 0
@@ -123,6 +219,15 @@ def reset_session_today_stats(
                     state_info[k] = 0
             state_info["today_cost_usd"] = 0.0
             state_info["today_cost_cny"] = 0.0
+            s_by_model = state_info.get("by_model")
+            if isinstance(s_by_model, dict):
+                for m_stats in s_by_model.values():
+                    if isinstance(m_stats, dict):
+                        m_stats["today_input_tokens"] = 0
+                        m_stats["today_cached_tokens"] = 0
+                        m_stats["today_output_tokens"] = 0
+                        m_stats["today_thought_tokens"] = 0
+                        m_stats["today_total_tokens"] = 0
     return info
 
 
@@ -224,6 +329,7 @@ class AntigravityBrainParser:
             "today_cost_usd": 0.0,
             "today_cost_cny": 0.0,
             "last_byte_offset": 0,
+            "by_model": {},
         }
 
     @classmethod
@@ -244,6 +350,7 @@ class AntigravityBrainParser:
             "last_record_type": "",
             "has_pending_tool": False,
             "extracted_session_name": "",
+            "current_model": "Antigravity (Main)",
             "steps_records": [],
             "info": cls._build_empty_info(file_path),
             "incremental_reads": 0,
@@ -380,6 +487,7 @@ class AntigravityBrainParser:
                             model_cand = after_to.split(". ")[0].split("<")[0].rstrip(".").strip()
                             if model_cand:
                                 info["model"] = model_cand
+                                state["current_model"] = model_cand
 
             elif etype == "PLANNER_RESPONSE":
                 in_raw = int(obj.get("input_tokens", 0) or 0)
@@ -416,6 +524,23 @@ class AntigravityBrainParser:
                     info["today_thought_tokens"] += thought_tok
                     info["today_total_tokens"] += step_total
 
+                cand_m = str(obj.get("model") or "").strip()
+                if cand_m:
+                    state["current_model"] = cand_m
+                    info["model"] = cand_m
+                cur_model = str(cand_m or state.get("current_model") or info.get("model") or "Antigravity (Main)")
+                _accumulate_model_tokens(
+                    info,
+                    cur_model,
+                    in_t=step_total_in,
+                    cached_t=cache_read,
+                    out_t=out_tok,
+                    thought_t=thought_tok,
+                    tot_t=step_total,
+                    sign=1,
+                    is_today=is_today,
+                )
+
                 state["steps_records"].append(
                     {
                         "timestamp": rec_ts,
@@ -424,6 +549,7 @@ class AntigravityBrainParser:
                         "output_tokens": out_tok,
                         "thought_tokens": thought_tok,
                         "total_tokens": step_total,
+                        "model": cur_model,
                     }
                 )
 
@@ -491,6 +617,7 @@ class GeminiCliSessionParser:
             "today_cost_usd": 0.0,
             "today_cost_cny": 0.0,
             "last_byte_offset": 0,
+            "by_model": {},
         }
 
     @classmethod
@@ -512,6 +639,7 @@ class GeminiCliSessionParser:
             "has_active_tool": False,
             "topic_title": "",
             "first_user_line": "",
+            "current_model": "",
             "info": cls._build_empty_info(file_path),
             "incremental_reads": 0,
             "full_reads": 0,
@@ -561,7 +689,8 @@ class GeminiCliSessionParser:
             info["total_tokens"] += sign * tot_t
 
             counted_date = turn_entry.get("today_date_counted")
-            if counted_date == today_date:
+            is_today = (counted_date == today_date)
+            if is_today:
                 info["today_steps"] = max(0, info["today_steps"] + sign * 1)
                 info["today_input_tokens"] = max(0, info["today_input_tokens"] + sign * in_t)
                 info["today_cached_tokens"] = max(0, info["today_cached_tokens"] + sign * cached_t)
@@ -569,6 +698,19 @@ class GeminiCliSessionParser:
                 info["today_thought_tokens"] = max(0, info["today_thought_tokens"] + sign * thought_t)
                 info["today_tool_tokens"] = max(0, info["today_tool_tokens"] + sign * tool_t)
                 info["today_total_tokens"] = max(0, info["today_total_tokens"] + sign * tot_t)
+
+            turn_model = str(turn_entry.get("model") or info.get("model") or "unknown")
+            _accumulate_model_tokens(
+                info,
+                turn_model,
+                in_t=in_t,
+                cached_t=cached_t,
+                out_t=out_t,
+                thought_t=thought_t,
+                tot_t=tot_t,
+                sign=sign,
+                is_today=is_today,
+            )
 
         info["tool_calls_count"] += sign * int(turn_entry.get("tool_calls", 0))
 
@@ -682,6 +824,7 @@ class GeminiCliSessionParser:
                 model_name = str(obj.get("model") or "")
                 if model_name:
                     info["model"] = model_name
+                    state["current_model"] = model_name
 
                 tok_obj = obj.get("tokens")
                 t_calls = obj.get("toolCalls")
@@ -731,6 +874,11 @@ class GeminiCliSessionParser:
                     eff_ts > 0 and datetime.datetime.fromtimestamp(eff_ts).date() == t_date
                 )
 
+                turn_model = (
+                    model_name
+                    or str(prev.get("model") if prev else "")
+                    or str(state.get("current_model") or info.get("model") or "unknown")
+                )
                 new_turn = {
                     "tokens": eff_tokens,
                     "tool_calls": eff_tool_calls,
@@ -743,6 +891,7 @@ class GeminiCliSessionParser:
                     "tot_t": tot_t,
                     "has_step": has_step,
                     "today_date_counted": t_date if is_today else None,
+                    "model": turn_model,
                 }
                 turns_by_id[msg_id] = new_turn
                 cls._apply_turn_delta(info, new_turn, +1, t_date)
@@ -813,6 +962,7 @@ class ClaudeCodeSessionParser:
             "today_cost_usd": 0.0,
             "today_cost_cny": 0.0,
             "last_byte_offset": 0,
+            "by_model": {},
         }
 
     @classmethod
@@ -835,6 +985,7 @@ class ClaudeCodeSessionParser:
             "explicit_session_name": "",
             "first_user_line": "",
             "last_event_type": "",
+            "current_model": "",
             "has_active_tool": False,
             "info": cls._build_empty_info(file_path),
             "incremental_reads": 0,
@@ -884,7 +1035,8 @@ class ClaudeCodeSessionParser:
         info["total_tokens"] += sign * tot_t
         info["tool_calls_count"] += sign * int(step.get("tool_calls", 0))
 
-        if step.get("today_date_counted") == today_date:
+        is_today = (step.get("today_date_counted") == today_date)
+        if is_today:
             info["today_steps"] = max(0, info["today_steps"] + sign * 1)
             info["today_input_tokens"] = max(0, info["today_input_tokens"] + sign * in_t)
             info["today_cached_tokens"] = max(0, info["today_cached_tokens"] + sign * cached_t)
@@ -892,6 +1044,19 @@ class ClaudeCodeSessionParser:
             info["today_thought_tokens"] = max(0, info["today_thought_tokens"] + sign * thought_t)
             info["today_tool_tokens"] = max(0, info["today_tool_tokens"] + sign * tool_t)
             info["today_total_tokens"] = max(0, info["today_total_tokens"] + sign * tot_t)
+
+        step_model = str(step.get("model") or info.get("model") or "claude-code")
+        _accumulate_model_tokens(
+            info,
+            step_model,
+            in_t=in_t,
+            cached_t=cached_t,
+            out_t=out_t,
+            thought_t=thought_t,
+            tot_t=tot_t,
+            sign=sign,
+            is_today=is_today,
+        )
 
     @classmethod
     def refresh_status(
@@ -1030,6 +1195,7 @@ class ClaudeCodeSessionParser:
             ).strip()
             if model_cand and model_cand != "<synthetic>":
                 info["model"] = model_cand
+                state["current_model"] = model_cand
 
             content_val = (
                 msg_obj.get("content")
@@ -1145,6 +1311,7 @@ class ClaudeCodeSessionParser:
                     is_today = bool(
                         step_ts > 0 and datetime.datetime.fromtimestamp(step_ts).date() == t_date
                     )
+                    step_model = model_cand or str(state.get("current_model") or info.get("model") or "claude-code")
                     step_record = {
                         "input_tokens": in_t,
                         "cached_tokens": cache_read,
@@ -1155,6 +1322,7 @@ class ClaudeCodeSessionParser:
                         "tool_calls": tool_calls_in_step,
                         "timestamp": step_ts,
                         "today_date_counted": t_date if is_today else None,
+                        "model": step_model,
                     }
                     if msg_id and msg_id in turns_by_id_idx:
                         idx = turns_by_id_idx[msg_id]
