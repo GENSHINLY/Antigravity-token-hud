@@ -1,6 +1,6 @@
 # Token HUD
 
-[![Version](https://img.shields.io/badge/version-v1.3.0-brightgreen.svg)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
+[![Version](https://img.shields.io/badge/version-v1.3.1-brightgreen.svg)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
 [![Release](https://img.shields.io/github/v/release/GENSHINLY/Antigravity-token-hud?color=brightgreen)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -11,6 +11,14 @@
 ![Antigravity Token HUD Preview](assets/hud-preview.png)
 
 </div>
+
+---
+
+## v1.3.1 更新（多模型分段计费与模型费率同步）
+
+- **多模型分段计费**：`hud_core/parsers.py` 按模型维度累计 `by_model` 用量，同一会话内切换不同模型时按各片段实际模型分别计费后求和。
+- **模型预设与远端价格表更新**：补充 `gemini-4-carbon` 与 `gemini-4-hydrogen` 默认费率，同步更新 `config.example.json` 与 `pricing.remote.json`。
+- **自检用例覆盖**：`hud_core/selftest.py` 补充多模型分段计费及新增模型费率校验。
 
 ---
 
@@ -63,7 +71,7 @@
 
 ## 目录结构
 
-- `token_hud.py`：顶层 CLI 入口门面（定义 `__version__ = "1.3.0"` 并重导出 `hud_core` 全部公开符号）。
+- `token_hud.py`：顶层 CLI 入口门面（定义 `__version__ = "1.3.1"` 并重导出 `hud_core` 全部公开符号）。
 - `hud_core/`：核心模块化包：
   - `animations.py`：`AnimationCoordinator` 动效调度中心、屏幕高刷探测与纯 Python 缓动插值函数。
   - `config.py`：`ConfigManager` 配置中心、默认配置、脏数据清洗与 Antigravity 路径自动探测。
@@ -201,7 +209,7 @@ py -3 token_hud.py --interval 1000
 ```
 
 支持的命令行参数：
-- `-V, --version`：输出版本号 `Token HUD v1.3.0` 并退出。
+- `-V, --version`：输出版本号 `Token HUD v1.3.1` 并退出。
 - `-s, --session <ID>`：指定优先锁定的会话 ID（前缀或完整 ID）。
 - `-p, --project <NAME>`：指定优先过滤的项目目录名。
 - `-i, --interval <MS>`：界面刷新间隔毫秒数（默认 `1000`）。

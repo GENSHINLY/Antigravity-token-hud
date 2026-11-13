@@ -37,7 +37,7 @@ from hud_core import (  # noqa: E402,F401
     run_self_test, sanitize_snapshot_for_output,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 __all__ = list(_hud_core.__all__)
 if "__version__" not in __all__:
