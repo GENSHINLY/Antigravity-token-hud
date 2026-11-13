@@ -1889,6 +1889,7 @@ def run_self_test(
         required_preset_models = {
             "Gemini 3.8 Flash",
             "Gemini 3.8 Pro",
+            "Gemini 4 Hydrogen",
             "Gemini 4 Argon",
             "Gemini 4 Carbon",
             "Gemini 2.5 Pro",
@@ -1910,6 +1911,7 @@ def run_self_test(
         }
         init_g25_pro_rates = p3_dlg.get_model_pricing_rates("gemini-2.5-pro")
         init_g38_flash_rates = p3_dlg.get_model_pricing_rates("Gemini 3.8 Flash")
+        init_g4_hydrogen_rates = p3_dlg.get_model_pricing_rates("gemini-4-hydrogen")
         init_gpt4o_rates = p3_dlg.get_model_pricing_rates("gpt-4o")
         init_deepseek_v3_rates = p3_dlg.get_model_pricing_rates("deepseek-v3")
         init_deepseek_r1_rates = p3_dlg.get_model_pricing_rates("deepseek-r1")
@@ -1928,6 +1930,9 @@ def run_self_test(
             and abs(float(init_g25_pro_rates.get("cached", 0.0)) - 0.125) < 1e-6
             and abs(float(init_g25_pro_rates.get("output", 0.0)) - 10.00) < 1e-6
             and abs(float(init_g38_flash_rates.get("input", 0.0)) - 0.15) < 1e-6
+            and abs(float(init_g4_hydrogen_rates.get("input", 0.0)) - 1.50) < 1e-6
+            and abs(float(init_g4_hydrogen_rates.get("cached", 0.0)) - 0.075) < 1e-6
+            and abs(float(init_g4_hydrogen_rates.get("output", 0.0)) - 7.50) < 1e-6
             and abs(float(init_gpt4o_rates.get("input", 0.0)) - 2.50) < 1e-6
             and abs(float(init_deepseek_v3_rates.get("input", 0.0)) - 0.27) < 1e-6
             and abs(float(init_deepseek_r1_rates.get("output", 0.0)) - 2.19) < 1e-6
