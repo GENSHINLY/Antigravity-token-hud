@@ -2376,6 +2376,90 @@ def run_self_test(
             f"Orchestrator测试: 分阶段计费不匹配 ({info_orch['cost_usd']} vs {expected_orch_usd})"
         )
 
+        # (1c) Ultra 版 Orchestrator (Carbon + Hydrogen) 费率优先级与全流程回归测试
+        carbon_rates = pricing_eng.pricing_table["gemini-4-carbon"]
+        argon_rates = pricing_eng.pricing_table["gemini-4-argon"]
+        hydrogen_rates = pricing_eng.pricing_table["gemini-4-hydrogen"]
+        assert pricing_eng.resolve_model_rates("Orchestrator (Carbon)") == carbon_rates, "Ultra测试: Orchestrator (Carbon) 费率错误"
+        assert pricing_eng.resolve_model_rates("Orchestrator (Carbon + Hydrogen)") == carbon_rates, "Ultra测试: 组合标签应优先匹配 Carbon"
+        assert pricing_eng.resolve_model_rates("Orchestrator (Argon + Hydrogen)") == argon_rates, "Ultra测试: 组合标签应优先匹配 Argon"
+        assert pricing_eng.resolve_model_rates("Orchestrator") == carbon_rates, "Ultra测试: 无括号 Orchestrator 兜底应匹配 Carbon"
+        assert pricing_eng.resolve_model_rates("Orchestrator (Hydrogen)") == hydrogen_rates, "Ultra测试: Orchestrator (Hydrogen) 费率错误"
+
+        ultra_trans = mm_tmp / "orchestrator_ultra_transcript.jsonl"
+        ultra_records = [
+            {
+                "step_index": 1,
+                "type": "USER_INPUT",
+                "created_at": iso_t1,
+                "content": "<USER_REQUEST>Ultra模式测试</USER_REQUEST>\nThe user changed setting `Model Selection` from None to Orchestrator (Carbon).",
+            },
+            {
+                "step_index": 2,
+                "type": "PLANNER_RESPONSE",
+                "created_at": iso_t1,
+                "input_tokens": 20000,
+                "cache_read_tokens": 5000,
+                "output_tokens": 1000,
+                "thinking_tokens": 200,
+                "tool_calls": [{"name": "exit_plan_mode", "args": {"plan": "impl"}}],
+            },
+            {
+                "step_index": 3,
+                "type": "SYSTEM_MESSAGE",
+                "created_at": iso_t2,
+                "content": "Plan mode is off: this turn runs on the execution model.",
+            },
+            {
+                "step_index": 4,
+                "type": "PLANNER_RESPONSE",
+                "created_at": iso_t3,
+                "input_tokens": 30000,
+                "cache_read_tokens": 15000,
+                "output_tokens": 2000,
+                "thinking_tokens": 100,
+                "tool_calls": [{"name": "enter_plan_mode", "args": {}}],
+            },
+            {
+                "step_index": 5,
+                "type": "PLANNER_RESPONSE",
+                "created_at": iso_t4,
+                "input_tokens": 10000,
+                "cache_read_tokens": 2000,
+                "output_tokens": 500,
+                "thinking_tokens": 50,
+            },
+        ]
+        ultra_trans.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in ultra_records) + "\n",
+            encoding="utf-8",
+        )
+        st_ultra = AntigravityBrainParser.create_state(ultra_trans)
+        info_ultra = AntigravityBrainParser.parse(ultra_trans, state=st_ultra)
+        assert info_ultra["model"] == "Orchestrator (Carbon)", (
+            f"Ultra测试: enter_plan_mode 后未切回 Carbon ({info_ultra['model']})"
+        )
+        assert "Orchestrator (Carbon)" in info_ultra["by_model"], "Ultra测试: by_model 缺失 Orchestrator (Carbon)"
+        assert "Orchestrator (Hydrogen)" in info_ultra["by_model"], "Ultra测试: by_model 缺失 Orchestrator (Hydrogen)"
+        ultra_plan_cost = pricing_eng.calculate_cost(
+            input_tokens=37000,
+            cached_tokens=7000,
+            output_tokens=1500,
+            thought_tokens=250,
+            model_name="Orchestrator (Carbon)",
+        )
+        ultra_exec_cost = pricing_eng.calculate_cost(
+            input_tokens=45000,
+            cached_tokens=15000,
+            output_tokens=2000,
+            thought_tokens=100,
+            model_name="Orchestrator (Hydrogen)",
+        )
+        expected_ultra_usd = round(ultra_plan_cost["usd"] + ultra_exec_cost["usd"], 6)
+        assert abs(float(info_ultra["cost_usd"]) - expected_ultra_usd) < 1e-5, (
+            f"Ultra测试: 分阶段计费不匹配 ({info_ultra['cost_usd']} vs {expected_ultra_usd})"
+        )
+
         # (2) Gemini CLI 多模型切换与同 msg_id 流式覆写测试
         cli_sess = mm_tmp / "session-cli.jsonl"
         cli_t1 = {"type": "user", "timestamp": iso_t1, "content": "hello cli"}

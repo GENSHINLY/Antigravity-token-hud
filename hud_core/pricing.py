@@ -451,10 +451,7 @@ class TokenPricingEngine:
             return self.pricing_table.get(
                 "gemini-3.8-flash", DEFAULT_MODEL_PRICING_PER_1M["gemini-3.8-flash"]
             )
-        if "hydrogen" in norm:
-            return self.pricing_table.get(
-                "gemini-4-hydrogen", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-hydrogen"]
-            )
+        # 优先匹配规划模型关键词，避免组合标签（如 "Orchestrator (Carbon + Hydrogen)"）被 hydrogen 抢先命中
         if "carbon" in norm:
             return self.pricing_table.get(
                 "gemini-4-carbon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-carbon"]
@@ -462,6 +459,10 @@ class TokenPricingEngine:
         if "argon" in norm:
             return self.pricing_table.get(
                 "gemini-4-argon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-argon"]
+            )
+        if "hydrogen" in norm:
+            return self.pricing_table.get(
+                "gemini-4-hydrogen", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-hydrogen"]
             )
         if "orchestrator" in norm:
             return self.pricing_table.get(
