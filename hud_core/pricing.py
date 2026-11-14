@@ -463,6 +463,10 @@ class TokenPricingEngine:
             return self.pricing_table.get(
                 "gemini-4-argon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-argon"]
             )
+        if "orchestrator" in norm:
+            return self.pricing_table.get(
+                "gemini-4-carbon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-carbon"]
+            )
         if "gemini" in norm and "pro" in norm:
             return self.pricing_table.get(
                 "gemini-3.8-pro", DEFAULT_MODEL_PRICING_PER_1M["gemini-3.8-pro"]

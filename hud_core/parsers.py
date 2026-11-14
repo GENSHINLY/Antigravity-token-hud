@@ -351,6 +351,8 @@ class AntigravityBrainParser:
             "has_pending_tool": False,
             "extracted_session_name": "",
             "current_model": "Antigravity (Main)",
+            "orchestrator_base_model": "",
+            "orchestrator_phase": "",
             "steps_records": [],
             "info": cls._build_empty_info(file_path),
             "incremental_reads": 0,
@@ -486,8 +488,32 @@ class AntigravityBrainParser:
                             after_to = line_part.split(" to ", 1)[1]
                             model_cand = after_to.split(". ")[0].split("<")[0].rstrip(".").strip()
                             if model_cand:
-                                info["model"] = model_cand
-                                state["current_model"] = model_cand
+                                if "orchestrator" in model_cand.lower():
+                                    state["orchestrator_base_model"] = model_cand
+                                    state["orchestrator_phase"] = "plan"
+                                else:
+                                    state["orchestrator_base_model"] = ""
+                                    state["orchestrator_phase"] = ""
+                                    info["model"] = model_cand
+                                    state["current_model"] = model_cand
+                if state.get("orchestrator_base_model"):
+                    plan_model = str(state["orchestrator_base_model"])
+                    state["orchestrator_phase"] = "plan"
+                    state["current_model"] = plan_model
+                    info["model"] = plan_model
+
+            elif etype in ("SYSTEM_MESSAGE", "GENERIC"):
+                if state.get("orchestrator_base_model"):
+                    content_str = str(obj.get("content") or "")
+                    if "Plan mode is off" in content_str:
+                        state["orchestrator_phase"] = "exec"
+                        state["current_model"] = "Orchestrator (Hydrogen)"
+                        info["model"] = "Orchestrator (Hydrogen)"
+                    elif "[plan review]" in content_str:
+                        plan_model = str(state["orchestrator_base_model"])
+                        state["orchestrator_phase"] = "plan"
+                        state["current_model"] = plan_model
+                        info["model"] = plan_model
 
             elif etype == "PLANNER_RESPONSE":
                 in_raw = int(obj.get("input_tokens", 0) or 0)
@@ -560,6 +586,21 @@ class AntigravityBrainParser:
                     last_tc = t_calls[-1]
                     if isinstance(last_tc, dict) and last_tc.get("name"):
                         info["last_tool"] = str(last_tc["name"])
+                    if state.get("orchestrator_base_model"):
+                        tool_names = [
+                            str(tc.get("name") or "")
+                            for tc in t_calls
+                            if isinstance(tc, dict)
+                        ]
+                        if "exit_plan_mode" in tool_names:
+                            state["orchestrator_phase"] = "exec"
+                            state["current_model"] = "Orchestrator (Hydrogen)"
+                            info["model"] = "Orchestrator (Hydrogen)"
+                        elif "enter_plan_mode" in tool_names:
+                            plan_model = str(state["orchestrator_base_model"])
+                            state["orchestrator_phase"] = "plan"
+                            state["current_model"] = plan_model
+                            info["model"] = plan_model
                 else:
                     state["has_pending_tool"] = False
 

@@ -2269,6 +2269,113 @@ def run_self_test(
         assert abs(float(info_mm["total_cost_usd"]) - expected_mm_usd) < 1e-5, "多模型测试: 跨天归零后 total_cost_usd 丢失"
         assert info_mm["by_model"]["gemini-2.5-flash"]["today_input_tokens"] == 0, "多模型测试: by_model today 字段未归零"
 
+        # (1b) Antigravity Orchestrator 双阶段动态模型名与分段计费测试
+        orch_trans = mm_tmp / "orchestrator_transcript.jsonl"
+        orch_u1 = {
+            "step_index": 1,
+            "type": "USER_INPUT",
+            "created_at": iso_t1,
+            "content": "<USER_REQUEST>测试Orchestrator模式</USER_REQUEST>\nThe user changed setting `Model Selection` from Gemini 4 Hydrogen (XHigh) to Orchestrator (Argon).",
+        }
+        orch_p1 = {
+            "step_index": 2,
+            "type": "PLANNER_RESPONSE",
+            "created_at": iso_t1,
+            "input_tokens": 10000,
+            "cache_read_tokens": 2000,
+            "output_tokens": 500,
+            "thinking_tokens": 100,
+            "tool_calls": [{"name": "read_file", "args": {}}],
+        }
+        orch_p2 = {
+            "step_index": 3,
+            "type": "PLANNER_RESPONSE",
+            "created_at": iso_t2,
+            "input_tokens": 15000,
+            "cache_read_tokens": 3000,
+            "output_tokens": 1000,
+            "thinking_tokens": 200,
+            "tool_calls": [{"name": "exit_plan_mode", "args": {"plan": "do work"}}],
+        }
+        orch_trans.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in (orch_u1, orch_p1, orch_p2)) + "\n",
+            encoding="utf-8",
+        )
+        st_orch = AntigravityBrainParser.create_state(orch_trans)
+        info_orch = AntigravityBrainParser.parse(orch_trans, state=st_orch)
+        assert info_orch["model"] == "Orchestrator (Hydrogen)", (
+            f"Orchestrator测试: exit_plan_mode 后模型名未切为执行模型 ({info_orch['model']})"
+        )
+        assert "Orchestrator (Argon)" in info_orch["by_model"], "Orchestrator测试: 缺失规划模型桶"
+        assert "Orchestrator (Hydrogen)" not in info_orch["by_model"], "Orchestrator测试: exit_plan_mode 步不应计入执行模型"
+
+        orch_sys_off = {
+            "step_index": 4,
+            "type": "SYSTEM_MESSAGE",
+            "created_at": iso_t2,
+            "content": "Plan mode is off: this turn runs on the execution model.",
+        }
+        orch_p3 = {
+            "step_index": 5,
+            "type": "PLANNER_RESPONSE",
+            "created_at": iso_t3,
+            "input_tokens": 40000,
+            "cache_read_tokens": 20000,
+            "output_tokens": 3000,
+            "thinking_tokens": 400,
+            "tool_calls": [{"name": "edit_file", "args": {}}],
+        }
+        with orch_trans.open("a", encoding="utf-8") as f_orch:
+            f_orch.write("\n".join(json.dumps(r, ensure_ascii=False) for r in (orch_sys_off, orch_p3)) + "\n")
+        info_orch = AntigravityBrainParser.parse(orch_trans, state=st_orch)
+        assert info_orch["model"] == "Orchestrator (Hydrogen)", (
+            f"Orchestrator测试: 执行阶段模型名异常 ({info_orch['model']})"
+        )
+        assert "Orchestrator (Hydrogen)" in info_orch["by_model"], "Orchestrator测试: 缺失执行模型桶"
+
+        orch_sys_review = {
+            "step_index": 6,
+            "type": "SYSTEM_MESSAGE",
+            "created_at": iso_t3,
+            "content": "[plan review] hand back to planning model",
+        }
+        orch_p4 = {
+            "step_index": 7,
+            "type": "PLANNER_RESPONSE",
+            "created_at": iso_t4,
+            "input_tokens": 12000,
+            "cache_read_tokens": 4000,
+            "output_tokens": 800,
+            "thinking_tokens": 150,
+        }
+        with orch_trans.open("a", encoding="utf-8") as f_orch:
+            f_orch.write("\n".join(json.dumps(r, ensure_ascii=False) for r in (orch_sys_review, orch_p4)) + "\n")
+        info_orch = AntigravityBrainParser.parse(orch_trans, state=st_orch)
+        assert info_orch["model"] == "Orchestrator (Argon)", (
+            f"Orchestrator测试: [plan review] 后未恢复规划模型名 ({info_orch['model']})"
+        )
+
+        # 规划阶段 total in: (10000+2000) + (15000+3000) + (12000+4000) = 46000, cached = 9000, out = 2300, thought = 450
+        argon_orch_cost = pricing_eng.calculate_cost(
+            input_tokens=46000,
+            cached_tokens=9000,
+            output_tokens=2300,
+            thought_tokens=450,
+            model_name="Orchestrator (Argon)",
+        )
+        # 执行阶段 total in: 40000+20000 = 60000, cached = 20000, out = 3000, thought = 400
+        hydrogen_orch_cost = pricing_eng.calculate_cost(
+            input_tokens=60000,
+            cached_tokens=20000,
+            output_tokens=3000,
+            thought_tokens=400,
+            model_name="Orchestrator (Hydrogen)",
+        )
+        expected_orch_usd = round(argon_orch_cost["usd"] + hydrogen_orch_cost["usd"], 6)
+        assert abs(float(info_orch["cost_usd"]) - expected_orch_usd) < 1e-5, (
+            f"Orchestrator测试: 分阶段计费不匹配 ({info_orch['cost_usd']} vs {expected_orch_usd})"
+        )
+
         # (2) Gemini CLI 多模型切换与同 msg_id 流式覆写测试
         cli_sess = mm_tmp / "session-cli.jsonl"
         cli_t1 = {"type": "user", "timestamp": iso_t1, "content": "hello cli"}
@@ -2305,6 +2412,7 @@ def run_self_test(
     multi_model_pricing_test = {
         "passed": True,
         "antigravity_multimodel_ok": True,
+        "orchestrator_multimodel_ok": True,
         "midnight_reset_ok": True,
         "cli_multimodel_ok": True,
         "claude_multimodel_ok": True,
