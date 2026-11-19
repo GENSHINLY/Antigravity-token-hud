@@ -1889,6 +1889,7 @@ def run_self_test(
         required_preset_models = {
             "Gemini 3.8 Flash",
             "Gemini 3.8 Pro",
+            "Gemini 4 Neon",
             "Gemini 4 Hydrogen",
             "Gemini 4 Argon",
             "Gemini 4 Carbon",
@@ -1911,6 +1912,7 @@ def run_self_test(
         }
         init_g25_pro_rates = p3_dlg.get_model_pricing_rates("gemini-2.5-pro")
         init_g38_flash_rates = p3_dlg.get_model_pricing_rates("Gemini 3.8 Flash")
+        init_g4_neon_rates = p3_dlg.get_model_pricing_rates("gemini-4-neon")
         init_g4_hydrogen_rates = p3_dlg.get_model_pricing_rates("gemini-4-hydrogen")
         init_gpt4o_rates = p3_dlg.get_model_pricing_rates("gpt-4o")
         init_deepseek_v3_rates = p3_dlg.get_model_pricing_rates("deepseek-v3")
@@ -1930,6 +1932,9 @@ def run_self_test(
             and abs(float(init_g25_pro_rates.get("cached", 0.0)) - 0.125) < 1e-6
             and abs(float(init_g25_pro_rates.get("output", 0.0)) - 10.00) < 1e-6
             and abs(float(init_g38_flash_rates.get("input", 0.0)) - 0.15) < 1e-6
+            and abs(float(init_g4_neon_rates.get("input", 0.0)) - 3.00) < 1e-6
+            and abs(float(init_g4_neon_rates.get("cached", 0.0)) - 0.15) < 1e-6
+            and abs(float(init_g4_neon_rates.get("output", 0.0)) - 15.00) < 1e-6
             and abs(float(init_g4_hydrogen_rates.get("input", 0.0)) - 1.50) < 1e-6
             and abs(float(init_g4_hydrogen_rates.get("cached", 0.0)) - 0.075) < 1e-6
             and abs(float(init_g4_hydrogen_rates.get("output", 0.0)) - 7.50) < 1e-6
@@ -2376,15 +2381,89 @@ def run_self_test(
             f"Orchestrator测试: 分阶段计费不匹配 ({info_orch['cost_usd']} vs {expected_orch_usd})"
         )
 
-        # (1c) Ultra 版 Orchestrator (Carbon + Hydrogen) 费率优先级与全流程回归测试
+        # (1c) Ultra 版 Orchestrator (Carbon + Hydrogen) 与 Neon (Neon + Hydrogen) 费率优先级及全流程回归测试
+        neon_rates = pricing_eng.pricing_table["gemini-4-neon"]
         carbon_rates = pricing_eng.pricing_table["gemini-4-carbon"]
         argon_rates = pricing_eng.pricing_table["gemini-4-argon"]
         hydrogen_rates = pricing_eng.pricing_table["gemini-4-hydrogen"]
+        assert pricing_eng.resolve_model_rates("Gemini 4 Neon (XHigh)") == neon_rates, "Neon测试: 独立 Neon 费率错误"
+        assert pricing_eng.resolve_model_rates("Orchestrator (Neon)") == neon_rates, "Neon测试: Orchestrator (Neon) 费率错误"
+        assert pricing_eng.resolve_model_rates("Orchestrator (Neon + Hydrogen)") == neon_rates, "Neon测试: 组合标签应优先匹配 Neon"
+        assert pricing_eng.resolve_model_rates("gemini-pro-orchestrator-neon") == neon_rates, "Neon测试: 内部规划 ID 费率错误"
+        assert pricing_eng.resolve_model_rates("gemini-flash-worker-agy") == hydrogen_rates, "Neon测试: 内部执行 Worker ID 费率错误"
         assert pricing_eng.resolve_model_rates("Orchestrator (Carbon)") == carbon_rates, "Ultra测试: Orchestrator (Carbon) 费率错误"
         assert pricing_eng.resolve_model_rates("Orchestrator (Carbon + Hydrogen)") == carbon_rates, "Ultra测试: 组合标签应优先匹配 Carbon"
         assert pricing_eng.resolve_model_rates("Orchestrator (Argon + Hydrogen)") == argon_rates, "Ultra测试: 组合标签应优先匹配 Argon"
         assert pricing_eng.resolve_model_rates("Orchestrator") == carbon_rates, "Ultra测试: 无括号 Orchestrator 兜底应匹配 Carbon"
         assert pricing_eng.resolve_model_rates("Orchestrator (Hydrogen)") == hydrogen_rates, "Ultra测试: Orchestrator (Hydrogen) 费率错误"
+
+        neon_trans = mm_tmp / "orchestrator_neon_transcript.jsonl"
+        neon_records = [
+            {
+                "step_index": 1,
+                "type": "USER_INPUT",
+                "created_at": iso_t1,
+                "content": "<USER_REQUEST>Neon Orchestrator测试</USER_REQUEST>\nThe user changed setting `Model Selection` from Gemini 4 Hydrogen (XHigh) to Orchestrator (Neon).",
+            },
+            {
+                "step_index": 2,
+                "type": "PLANNER_RESPONSE",
+                "created_at": iso_t1,
+                "model": "gemini-pro-orchestrator-neon",
+                "input_tokens": 10000,
+                "cache_read_tokens": 5000,
+                "output_tokens": 800,
+                "thinking_tokens": 100,
+                "tool_calls": [{"name": "exit_plan_mode", "args": {"plan": "run neon plan"}}],
+            },
+            {
+                "step_index": 3,
+                "type": "SYSTEM_MESSAGE",
+                "created_at": iso_t2,
+                "content": "Plan mode is off: this turn runs on the execution model.",
+            },
+            {
+                "step_index": 4,
+                "type": "PLANNER_RESPONSE",
+                "created_at": iso_t3,
+                "model": "gemini-flash-worker-agy",
+                "input_tokens": 20000,
+                "cache_read_tokens": 10000,
+                "output_tokens": 1200,
+                "thinking_tokens": 200,
+            },
+        ]
+        neon_trans.write_text(
+            "\n".join(json.dumps(r, ensure_ascii=False) for r in neon_records) + "\n",
+            encoding="utf-8",
+        )
+        st_neon = AntigravityBrainParser.create_state(neon_trans)
+        info_neon = AntigravityBrainParser.parse(neon_trans, state=st_neon)
+        assert info_neon["model"] == "Orchestrator (Hydrogen)", (
+            f"Neon测试: 执行阶段模型名异常 ({info_neon['model']})"
+        )
+        assert "Orchestrator (Neon)" in info_neon["by_model"], "Neon测试: by_model 缺失 Orchestrator (Neon)"
+        assert "Orchestrator (Hydrogen)" in info_neon["by_model"], "Neon测试: by_model 缺失 Orchestrator (Hydrogen)"
+        assert "gemini-pro-orchestrator-neon" not in info_neon["by_model"], "Neon测试: 不应保留原始内部规划 ID 键"
+        assert "gemini-flash-worker-agy" not in info_neon["by_model"], "Neon测试: 不应保留原始内部 Worker ID 键"
+        neon_plan_cost = pricing_eng.calculate_cost(
+            input_tokens=15000,
+            cached_tokens=5000,
+            output_tokens=800,
+            thought_tokens=100,
+            model_name="Orchestrator (Neon)",
+        )
+        neon_exec_cost = pricing_eng.calculate_cost(
+            input_tokens=30000,
+            cached_tokens=10000,
+            output_tokens=1200,
+            thought_tokens=200,
+            model_name="Orchestrator (Hydrogen)",
+        )
+        expected_neon_usd = round(neon_plan_cost["usd"] + neon_exec_cost["usd"], 6)
+        assert abs(float(info_neon["cost_usd"]) - expected_neon_usd) < 1e-5, (
+            f"Neon测试: 分阶段计费不匹配 ({info_neon['cost_usd']} vs {expected_neon_usd})"
+        )
 
         ultra_trans = mm_tmp / "orchestrator_ultra_transcript.jsonl"
         ultra_records = [

@@ -24,6 +24,12 @@
       "output": 10.0,
       "thought": 10.0
     },
+    "gemini-4-neon": {
+      "input": 3.0,
+      "cached": 0.15,
+      "output": 15.0,
+      "thought": 15.0
+    },
     "gemini-4-hydrogen": {
       "input": 1.5,
       "cached": 0.075,

@@ -1,6 +1,6 @@
 # Token HUD
 
-[![Version](https://img.shields.io/badge/version-v1.3.1-brightgreen.svg)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
+[![Version](https://img.shields.io/badge/version-v1.3.2-brightgreen.svg)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
 [![Release](https://img.shields.io/github/v/release/GENSHINLY/Antigravity-token-hud?color=brightgreen)](https://github.com/GENSHINLY/Antigravity-token-hud/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -11,6 +11,14 @@
 ![Antigravity Token HUD Preview](assets/hud-preview.png)
 
 </div>
+
+---
+
+## v1.3.2 更新（Orchestrator 双阶段适配与 Gemini 4 Neon 费率）
+
+- **Orchestrator 双阶段动态适配**：`hud_core/parsers.py` 自动识别 Antigravity Orchestrator 规划模型（`Argon` / `Carbon` / `Neon`）与执行模型（`Hydrogen`）的阶段切换，同步将步级内部标识（`gemini-pro-orchestrator-*` / `gemini-flash-worker-agy`）映射为对应阶段名称并按实际模型分段计费。
+- **Gemini 4 Neon 费率同步**：预设表、`config.example.json` 与 `pricing.remote.json` 新增 `gemini-4-neon`（每百万 Token 输入 `3.00 USD`、缓存 `0.15 USD`、输出与思考 `15.00 USD`），并在 `TokenPricingEngine` 中优先匹配 `neon` / `carbon` / `argon`。
+- **自检用例扩充**：`hud_core/selftest.py` 补充 Orchestrator 双阶段流程及 Neon / Ultra 费率优先级回归断言。
 
 ---
 
@@ -71,7 +79,7 @@
 
 ## 目录结构
 
-- `token_hud.py`：顶层 CLI 入口门面（定义 `__version__ = "1.3.1"` 并重导出 `hud_core` 全部公开符号）。
+- `token_hud.py`：顶层 CLI 入口门面（定义 `__version__ = "1.3.2"` 并重导出 `hud_core` 全部公开符号）。
 - `hud_core/`：核心模块化包：
   - `animations.py`：`AnimationCoordinator` 动效调度中心、屏幕高刷探测与纯 Python 缓动插值函数。
   - `config.py`：`ConfigManager` 配置中心、默认配置、脏数据清洗与 Antigravity 路径自动探测。
@@ -209,7 +217,7 @@ py -3 token_hud.py --interval 1000
 ```
 
 支持的命令行参数：
-- `-V, --version`：输出版本号 `Token HUD v1.3.1` 并退出。
+- `-V, --version`：输出版本号 `Token HUD v1.3.2` 并退出。
 - `-s, --session <ID>`：指定优先锁定的会话 ID（前缀或完整 ID）。
 - `-p, --project <NAME>`：指定优先过滤的项目目录名。
 - `-i, --interval <MS>`：界面刷新间隔毫秒数（默认 `1000`）。

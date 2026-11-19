@@ -292,6 +292,34 @@ class AntigravityBrainParser:
         return _discover_antigravity_files(base_path)
 
     @staticmethod
+    def _normalize_step_model_name(raw_model: str, state: dict[str, Any]) -> str:
+        """将 Antigravity 步级内部模型标识映射为与阶段一致的统一名称。"""
+        cand = str(raw_model or "").strip()
+        if not cand:
+            return ""
+        low = cand.lower()
+        if "flash-worker" in low or ("worker" in low and "agy" in low):
+            if state.get("orchestrator_base_model"):
+                state["orchestrator_phase"] = "exec"
+            return "Orchestrator (Hydrogen)"
+        if "orchestrator" in low:
+            if state.get("orchestrator_base_model"):
+                state["orchestrator_phase"] = "plan"
+                return str(state["orchestrator_base_model"])
+            if "neon" in low:
+                base = "Orchestrator (Neon)"
+            elif "carbon" in low:
+                base = "Orchestrator (Carbon)"
+            elif "argon" in low:
+                base = "Orchestrator (Argon)"
+            else:
+                base = "Orchestrator"
+            state["orchestrator_base_model"] = base
+            state["orchestrator_phase"] = "plan"
+            return base
+        return cand
+
+    @staticmethod
     def _build_empty_info(file_path: Path) -> dict[str, Any]:
         cid = "unknown"
         try:
@@ -550,7 +578,9 @@ class AntigravityBrainParser:
                     info["today_thought_tokens"] += thought_tok
                     info["today_total_tokens"] += step_total
 
-                cand_m = str(obj.get("model") or "").strip()
+                cand_m = cls._normalize_step_model_name(
+                    str(obj.get("model") or ""), state
+                )
                 if cand_m:
                     state["current_model"] = cand_m
                     info["model"] = cand_m

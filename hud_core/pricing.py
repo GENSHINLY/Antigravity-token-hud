@@ -26,6 +26,7 @@ REMOTE_PRICING_ENDPOINTS: tuple[str, ...] = (
 MODEL_PRICING_PRESETS: list[tuple[str, str]] = [
     ("gemini-3.8-flash", "Gemini 3.8 Flash"),
     ("gemini-3.8-pro", "Gemini 3.8 Pro"),
+    ("gemini-4-neon", "Gemini 4 Neon"),
     ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
     ("gemini-4-carbon", "Gemini 4 Carbon"),
     ("gemini-4-argon", "Gemini 4 Argon"),
@@ -68,6 +69,12 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
         "cached": 0.3125,
         "output": 10.00,
         "thought": 10.00,
+    },
+    "gemini-4-neon": {
+        "input": 3.00,
+        "cached": 0.15,
+        "output": 15.00,
+        "thought": 15.00,
     },
     "gemini-4-hydrogen": {
         "input": 1.50,
@@ -447,6 +454,10 @@ class TokenPricingEngine:
             return self.pricing_table.get(
                 "o1", DEFAULT_MODEL_PRICING_PER_1M["o1"]
             )
+        if "flash-worker" in norm or ("worker" in norm and "agy" in norm):
+            return self.pricing_table.get(
+                "gemini-4-hydrogen", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-hydrogen"]
+            )
         if "flash" in norm:
             return self.pricing_table.get(
                 "gemini-3.8-flash", DEFAULT_MODEL_PRICING_PER_1M["gemini-3.8-flash"]
@@ -459,6 +470,10 @@ class TokenPricingEngine:
         if "argon" in norm:
             return self.pricing_table.get(
                 "gemini-4-argon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-argon"]
+            )
+        if "neon" in norm:
+            return self.pricing_table.get(
+                "gemini-4-neon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-neon"]
             )
         if "hydrogen" in norm:
             return self.pricing_table.get(
