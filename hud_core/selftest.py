@@ -46,6 +46,8 @@ from .pricing import (
     fetch_remote_pricing_table,
     format_cost_cny,
     format_cost_usd,
+    format_model_display_name,
+    load_pricing_catalog,
     merge_remote_pricing_into_config,
     normalize_proxy_url,
     normalize_remote_pricing_payload,
@@ -2537,6 +2539,56 @@ def run_self_test(
         expected_ultra_usd = round(ultra_plan_cost["usd"] + ultra_exec_cost["usd"], 6)
         assert abs(float(info_ultra["cost_usd"]) - expected_ultra_usd) < 1e-5, (
             f"Ultra测试: 分阶段计费不匹配 ({info_ultra['cost_usd']} vs {expected_ultra_usd})"
+        )
+
+        # (1d) 单一数据源加载与动态元素/Orchestrator 泛化扩展验证（无需修改 Python 代码）
+        dyn_catalog_path = mm_tmp / "pricing.remote.json"
+        dyn_catalog_path.write_text(
+            json.dumps(
+                {
+                    "version": "1.2.0",
+                    "updated_at": "2026-11-19",
+                    "pricing": {
+                        "gemini-4-oxygen": {
+                            "input": 2.5,
+                            "cached": 0.125,
+                            "output": 12.5,
+                            "thought": 12.5,
+                        },
+                        "gemini-4-hydrogen": {
+                            "input": 1.5,
+                            "cached": 0.075,
+                            "output": 7.5,
+                            "thought": 7.5,
+                        },
+                        "default": {
+                            "input": 3.0,
+                            "cached": 0.3,
+                            "output": 15.0,
+                            "thought": 15.0,
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        dyn_presets, dyn_pricing = load_pricing_catalog(dyn_catalog_path)
+        assert ("gemini-4-oxygen", "Gemini 4 Oxygen") in dyn_presets, "动态目录测试: 缺失 gemini-4-oxygen 预设"
+        assert dyn_pricing["gemini-4-oxygen"]["input"] == 2.5, "动态目录测试: gemini-4-oxygen 单价异常"
+        assert format_model_display_name("gemini-4-oxygen") == "Gemini 4 Oxygen", "动态目录测试: Gemini 显示名格式化异常"
+        assert format_model_display_name("claude-opus-4-7") == "Claude Opus 4.7", "动态目录测试: Claude 显示名格式化异常"
+
+        dyn_eng = TokenPricingEngine(pricing_table=dyn_pricing)
+        oxygen_rates = dyn_pricing["gemini-4-oxygen"]
+        dyn_hydrogen_rates = dyn_pricing["gemini-4-hydrogen"]
+        assert dyn_eng.resolve_model_rates("Gemini 4 Oxygen (XHigh)") == oxygen_rates, "泛化匹配测试: Gemini 4 Oxygen 失败"
+        assert dyn_eng.resolve_model_rates("Orchestrator (Oxygen)") == oxygen_rates, "泛化匹配测试: Orchestrator (Oxygen) 失败"
+        assert dyn_eng.resolve_model_rates("Orchestrator (Oxygen + Hydrogen)") == oxygen_rates, "泛化匹配测试: 组合标签优先匹配 Oxygen 失败"
+        assert dyn_eng.resolve_model_rates("gemini-pro-orchestrator-oxygen") == oxygen_rates, "泛化匹配测试: 内部规划 ID 匹配 Oxygen 失败"
+        assert dyn_eng.resolve_model_rates("Orchestrator (Hydrogen)") == dyn_hydrogen_rates, "泛化匹配测试: Hydrogen 执行费率失败"
+        assert AntigravityBrainParser._normalize_step_model_name("gemini-pro-orchestrator-oxygen", {}) == "Orchestrator (Oxygen)", (
+            "泛化映射测试: _normalize_step_model_name 动态提取新规划元素失败"
         )
 
         # (2) Gemini CLI 多模型切换与同 msg_id 流式覆写测试

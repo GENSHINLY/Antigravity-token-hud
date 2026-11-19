@@ -306,12 +306,9 @@ class AntigravityBrainParser:
             if state.get("orchestrator_base_model"):
                 state["orchestrator_phase"] = "plan"
                 return str(state["orchestrator_base_model"])
-            if "neon" in low:
-                base = "Orchestrator (Neon)"
-            elif "carbon" in low:
-                base = "Orchestrator (Carbon)"
-            elif "argon" in low:
-                base = "Orchestrator (Argon)"
+            m_orch = re.search(r"orchestrator[-_\s(]+([a-z][a-z0-9]*)", low)
+            if m_orch:
+                base = f"Orchestrator ({m_orch.group(1).capitalize()})"
             else:
                 base = "Orchestrator"
             state["orchestrator_base_model"] = base

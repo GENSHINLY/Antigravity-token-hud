@@ -55,6 +55,7 @@ from .pricing import (
     TokenPricingEngine,
     fetch_online_usd_rate,
     fetch_remote_pricing_table,
+    format_model_display_name,
     get_default_pricing_config,
     merge_remote_pricing_into_config,
 )
@@ -1443,10 +1444,16 @@ class SettingsDialog(QDialog):
 
             rows_spec: list[tuple[str, str]] = list(MODEL_PRICING_PRESETS)
             seen_keys = {k for k, _ in rows_spec}
+            extra_rows: list[tuple[str, str]] = []
             for extra_k in normalized_cfg.keys():
                 if extra_k not in seen_keys:
-                    rows_spec.append((extra_k, extra_k))
+                    extra_rows.append((extra_k, format_model_display_name(extra_k)))
                     seen_keys.add(extra_k)
+            if extra_rows:
+                if rows_spec and rows_spec[-1][0] == "default":
+                    rows_spec = rows_spec[:-1] + extra_rows + [rows_spec[-1]]
+                else:
+                    rows_spec.extend(extra_rows)
 
             self.pricing_table.setRowCount(0)
             for row_idx, (model_key, display_name) in enumerate(rows_spec):

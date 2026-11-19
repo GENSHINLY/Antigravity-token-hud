@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import re
 from typing import Any
 
 DEFAULT_USD_TO_CNY_RATE: float = 7.25
@@ -22,42 +24,84 @@ REMOTE_PRICING_ENDPOINTS: tuple[str, ...] = (
     "https://cdn.jsdelivr.net/gh/GENSHINLY/Antigravity-token-hud@main/pricing.remote.json",
 )
 
-# 官方预设模型列表：(标准配置键名, 界面显示名称)
-MODEL_PRICING_PRESETS: list[tuple[str, str]] = [
-    ("gemini-3.8-flash", "Gemini 3.8 Flash"),
-    ("gemini-3.8-pro", "Gemini 3.8 Pro"),
-    ("gemini-4-neon", "Gemini 4 Neon"),
-    ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
-    ("gemini-4-carbon", "Gemini 4 Carbon"),
-    ("gemini-4-argon", "Gemini 4 Argon"),
-    ("gemini-3.1-pro", "Gemini 3.1 Pro"),
-    ("gemini-3.1-flash", "Gemini 3.1 Flash"),
-    ("gemini-2.5-pro", "Gemini 2.5 Pro"),
-    ("gemini-2.5-flash", "Gemini 2.5 Flash"),
-    ("gemini-2.0-flash", "Gemini 2.0 Flash"),
-    ("gemini-1.5-pro", "Gemini 1.5 Pro"),
-    ("gemini-1.5-flash", "Gemini 1.5 Flash"),
-    ("claude-opus-4-6", "Claude Opus 4.6"),
-    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
-    ("claude-3.7-sonnet", "Claude 3.7 Sonnet"),
-    ("claude-3.5-sonnet", "Claude 3.5 Sonnet"),
-    ("claude-3.5-haiku", "Claude 3.5 Haiku"),
-    ("claude-3-opus", "Claude 3 Opus"),
-    ("gpt-4o", "GPT-4o"),
-    ("gpt-4o-mini", "GPT-4o mini"),
-    ("o1", "OpenAI o1"),
-    ("o3-mini", "OpenAI o3-mini"),
-    ("deepseek-chat", "DeepSeek-V3 (deepseek-chat)"),
-    ("deepseek-reasoner", "DeepSeek-R1 (deepseek-reasoner)"),
-    ("default", "default"),
-]
+_LOCAL_PRICING_CATALOG_PATH: Path = (
+    Path(__file__).resolve().parent.parent / "pricing.remote.json"
+)
 
-# 每百万 Token (1M Tokens) 美元参考费率表：
-# - input: 未命中缓存的输入单价 ($ / 1M tokens)
-# - cached: 缓存读取单价 ($ / 1M tokens)
-# - output: 输出单价 ($ / 1M tokens)
-# - thought: 思考/推理 Token 单价 ($ / 1M tokens，默认与 output 一致)
-DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
+_GENERIC_GEMINI_SUFFIXES: frozenset[str] = frozenset(
+    {"pro", "flash", "lite", "ultra", "nano", "mini"}
+)
+_GEMINI_NAMED_MODEL_RE = re.compile(r"^gemini-\d+(?:\.\d+)?-([a-z][a-z0-9]+)$")
+_CLAUDE_VERSION_MODEL_RE = re.compile(r"^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$")
+
+_DISPLAY_NAME_OVERRIDES: dict[str, str] = {
+    "gpt-4o": "GPT-4o",
+    "gpt-4o-mini": "GPT-4o mini",
+    "o1": "OpenAI o1",
+    "o3-mini": "OpenAI o3-mini",
+    "deepseek-chat": "DeepSeek-V3 (deepseek-chat)",
+    "deepseek-reasoner": "DeepSeek-R1 (deepseek-reasoner)",
+    "default": "default",
+}
+
+
+def format_model_display_name(model_key: str) -> str:
+    """将标准模型配置键名格式化为可读的设置表格展示名称。"""
+    key = str(model_key or "").strip()
+    if not key:
+        return "default"
+    low = key.lower()
+    if low in _DISPLAY_NAME_OVERRIDES:
+        return _DISPLAY_NAME_OVERRIDES[low]
+    m_claude = _CLAUDE_VERSION_MODEL_RE.match(low)
+    if m_claude:
+        return f"Claude {m_claude.group(1).capitalize()} {m_claude.group(2)}.{m_claude.group(3)}"
+    parts: list[str] = []
+    for tok in key.split("-"):
+        if not tok:
+            continue
+        tok_low = tok.lower()
+        if tok_low == "gpt":
+            parts.append("GPT")
+        elif tok_low == "deepseek":
+            parts.append("DeepSeek")
+        elif tok[0].isalpha():
+            parts.append(tok.capitalize())
+        else:
+            parts.append(tok)
+    return " ".join(parts) if parts else key
+
+
+_MODEL_KEY_ALIASES: dict[str, tuple[str, ...]] = {
+    "claude-3.7-sonnet": ("claude-3.7-sonnet", "claude-3-7-sonnet"),
+    "claude-3-7-sonnet": ("claude-3.7-sonnet", "claude-3-7-sonnet"),
+    "claude-3.5-sonnet": ("claude-3.5-sonnet", "claude-3-5-sonnet"),
+    "claude-3-5-sonnet": ("claude-3.5-sonnet", "claude-3-5-sonnet"),
+    "claude-3.5-haiku": ("claude-3.5-haiku", "claude-3-5-haiku"),
+    "claude-3-5-haiku": ("claude-3.5-haiku", "claude-3-5-haiku"),
+    "claude-3-opus": ("claude-3-opus", "claude-3.0-opus"),
+    "claude-3.0-opus": ("claude-3-opus", "claude-3.0-opus"),
+    "claude-opus-4.6": ("claude-opus-4-6", "claude-opus-4.6"),
+    "claude-opus-4-6": ("claude-opus-4-6", "claude-opus-4.6"),
+    "claude-sonnet-4.6": ("claude-sonnet-4-6", "claude-sonnet-4.6"),
+    "claude-sonnet-4-6": ("claude-sonnet-4-6", "claude-sonnet-4.6"),
+    "gpt-4o": ("gpt-4o", "chatgpt-4o-latest"),
+    "chatgpt-4o-latest": ("gpt-4o", "chatgpt-4o-latest"),
+    "gpt-4o-mini": ("gpt-4o-mini", "gpt4o-mini"),
+    "gpt4o-mini": ("gpt-4o-mini", "gpt4o-mini"),
+    "o1": ("o1", "openai-o1", "o1-preview"),
+    "openai-o1": ("o1", "openai-o1", "o1-preview"),
+    "o1-preview": ("o1", "openai-o1", "o1-preview"),
+    "o3-mini": ("o3-mini", "openai-o3-mini"),
+    "openai-o3-mini": ("o3-mini", "openai-o3-mini"),
+    "deepseek-chat": ("deepseek-chat", "deepseek-v3"),
+    "deepseek-v3": ("deepseek-chat", "deepseek-v3"),
+    "deepseek-reasoner": ("deepseek-reasoner", "deepseek-r1"),
+    "deepseek-r1": ("deepseek-reasoner", "deepseek-r1"),
+}
+
+# 内置兜底费率表：仅在同目录 pricing.remote.json 缺失或损坏时回退使用。
+_FALLBACK_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
     "gemini-3.8-flash": {
         "input": 0.15,
         "cached": 0.0375,
@@ -148,19 +192,7 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
         "output": 15.00,
         "thought": 15.00,
     },
-    "claude-3-7-sonnet": {
-        "input": 3.00,
-        "cached": 0.30,
-        "output": 15.00,
-        "thought": 15.00,
-    },
     "claude-3.7-sonnet": {
-        "input": 3.00,
-        "cached": 0.30,
-        "output": 15.00,
-        "thought": 15.00,
-    },
-    "claude-3-5-sonnet": {
         "input": 3.00,
         "cached": 0.30,
         "output": 15.00,
@@ -171,12 +203,6 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
         "cached": 0.30,
         "output": 15.00,
         "thought": 15.00,
-    },
-    "claude-3-5-haiku": {
-        "input": 0.80,
-        "cached": 0.08,
-        "output": 4.00,
-        "thought": 4.00,
     },
     "claude-3.5-haiku": {
         "input": 0.80,
@@ -220,19 +246,7 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
         "output": 1.10,
         "thought": 1.10,
     },
-    "deepseek-v3": {
-        "input": 0.27,
-        "cached": 0.07,
-        "output": 1.10,
-        "thought": 1.10,
-    },
     "deepseek-reasoner": {
-        "input": 0.55,
-        "cached": 0.14,
-        "output": 2.19,
-        "thought": 2.19,
-    },
-    "deepseek-r1": {
         "input": 0.55,
         "cached": 0.14,
         "output": 2.19,
@@ -246,33 +260,89 @@ DEFAULT_MODEL_PRICING_PER_1M: dict[str, dict[str, float]] = {
     },
 }
 
-_MODEL_KEY_ALIASES: dict[str, tuple[str, ...]] = {
-    "claude-3.7-sonnet": ("claude-3.7-sonnet", "claude-3-7-sonnet"),
-    "claude-3-7-sonnet": ("claude-3.7-sonnet", "claude-3-7-sonnet"),
-    "claude-3.5-sonnet": ("claude-3.5-sonnet", "claude-3-5-sonnet"),
-    "claude-3-5-sonnet": ("claude-3.5-sonnet", "claude-3-5-sonnet"),
-    "claude-3.5-haiku": ("claude-3.5-haiku", "claude-3-5-haiku"),
-    "claude-3-5-haiku": ("claude-3.5-haiku", "claude-3-5-haiku"),
-    "claude-3-opus": ("claude-3-opus", "claude-3.0-opus"),
-    "claude-3.0-opus": ("claude-3-opus", "claude-3.0-opus"),
-    "claude-opus-4.6": ("claude-opus-4-6", "claude-opus-4.6"),
-    "claude-opus-4-6": ("claude-opus-4-6", "claude-opus-4.6"),
-    "claude-sonnet-4.6": ("claude-sonnet-4-6", "claude-sonnet-4.6"),
-    "claude-sonnet-4-6": ("claude-sonnet-4-6", "claude-sonnet-4.6"),
-    "gpt-4o": ("gpt-4o", "chatgpt-4o-latest"),
-    "chatgpt-4o-latest": ("gpt-4o", "chatgpt-4o-latest"),
-    "gpt-4o-mini": ("gpt-4o-mini", "gpt4o-mini"),
-    "gpt4o-mini": ("gpt-4o-mini", "gpt4o-mini"),
-    "o1": ("o1", "openai-o1", "o1-preview"),
-    "openai-o1": ("o1", "openai-o1", "o1-preview"),
-    "o1-preview": ("o1", "openai-o1", "o1-preview"),
-    "o3-mini": ("o3-mini", "openai-o3-mini"),
-    "openai-o3-mini": ("o3-mini", "openai-o3-mini"),
-    "deepseek-chat": ("deepseek-chat", "deepseek-v3"),
-    "deepseek-v3": ("deepseek-chat", "deepseek-v3"),
-    "deepseek-reasoner": ("deepseek-reasoner", "deepseek-r1"),
-    "deepseek-r1": ("deepseek-reasoner", "deepseek-r1"),
-}
+
+def _parse_catalog_source(
+    source_table: dict[str, Any],
+) -> tuple[list[tuple[str, str]], dict[str, dict[str, float]]]:
+    """解析费率表字典并扩展常用别名，生成有序预设列表与默认费率映射。"""
+    presets: list[tuple[str, str]] = []
+    seen_presets: set[str] = set()
+    pricing_map: dict[str, dict[str, float]] = {}
+    default_fallback = _FALLBACK_MODEL_PRICING_PER_1M["default"]
+
+    for raw_k, raw_v in source_table.items():
+        if not isinstance(raw_v, dict):
+            continue
+        key = str(raw_k or "").strip()
+        if not key or key in ("version", "updated_at", "usd_to_cny_rate"):
+            continue
+        base_rates = dict(_FALLBACK_MODEL_PRICING_PER_1M.get(key, default_fallback))
+        valid_fields = 0
+        for field in ("input", "cached", "output", "thought"):
+            if field in raw_v and not isinstance(raw_v[field], bool):
+                try:
+                    val = float(raw_v[field])
+                    if (
+                        val == val
+                        and val not in (float("inf"), float("-inf"))
+                        and 0.0 <= val <= 100000.0
+                    ):
+                        base_rates[field] = round(val, 6)
+                        valid_fields += 1
+                except (TypeError, ValueError):
+                    pass
+        if valid_fields == 0:
+            continue
+        if "thought" not in raw_v and "output" in raw_v and key not in _FALLBACK_MODEL_PRICING_PER_1M:
+            base_rates["thought"] = base_rates["output"]
+
+        pricing_map[key] = dict(base_rates)
+        norm_k = "-".join(key.lower().replace("_", "-").split())
+        for alias in _MODEL_KEY_ALIASES.get(norm_k, ()):
+            pricing_map.setdefault(alias, dict(base_rates))
+
+        if key != "default" and key not in seen_presets:
+            display_name = (
+                str(raw_v.get("display_name") or "").strip()
+                or format_model_display_name(key)
+            )
+            presets.append((key, display_name))
+            seen_presets.add(key)
+
+    if "default" not in pricing_map:
+        pricing_map["default"] = dict(default_fallback)
+    presets.append(("default", format_model_display_name("default")))
+    return presets, pricing_map
+
+
+def load_pricing_catalog(
+    catalog_path: Path | None = None,
+) -> tuple[list[tuple[str, str]], dict[str, dict[str, float]]]:
+    """
+    优先从本地 pricing.remote.json 加载模型列表与默认费率（单一数据源），
+    文件缺失、损坏或为空时安全回退至内置兜底表。
+    """
+    target_path = Path(catalog_path) if catalog_path is not None else _LOCAL_PRICING_CATALOG_PATH
+    try:
+        if target_path.is_file():
+            payload = json.loads(target_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                raw_table = (
+                    payload.get("pricing")
+                    if isinstance(payload.get("pricing"), dict)
+                    else payload
+                )
+                if isinstance(raw_table, dict):
+                    presets, pricing_map = _parse_catalog_source(raw_table)
+                    if len(presets) > 1:
+                        return presets, pricing_map
+    except (OSError, ValueError, TypeError):
+        pass
+    return _parse_catalog_source(_FALLBACK_MODEL_PRICING_PER_1M)
+
+
+# 官方预设模型列表与每百万 Token (1M Tokens) 美元参考费率表（以 pricing.remote.json 为准）
+MODEL_PRICING_PRESETS, DEFAULT_MODEL_PRICING_PER_1M = load_pricing_catalog()
 
 
 def get_default_pricing_config() -> dict[str, dict[str, float]]:
@@ -462,20 +532,29 @@ class TokenPricingEngine:
             return self.pricing_table.get(
                 "gemini-3.8-flash", DEFAULT_MODEL_PRICING_PER_1M["gemini-3.8-flash"]
             )
-        # 优先匹配规划模型关键词，避免组合标签（如 "Orchestrator (Carbon + Hydrogen)"）被 hydrogen 抢先命中
-        if "carbon" in norm:
-            return self.pricing_table.get(
-                "gemini-4-carbon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-carbon"]
-            )
-        if "argon" in norm:
-            return self.pricing_table.get(
-                "gemini-4-argon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-argon"]
-            )
-        if "neon" in norm:
-            return self.pricing_table.get(
-                "gemini-4-neon", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-neon"]
-            )
-        if "hydrogen" in norm:
+        # 动态提取 Gemini 4+ 等命名元素系列后缀（排除 pro/flash/lite 等通用层级词），先匹配非 hydrogen 规划模型再回退 hydrogen
+        named_suffixes: list[tuple[str, dict[str, float]]] = []
+        seen_suffixes: set[str] = set()
+        for key, rates in sorted(
+            self.pricing_table.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            key_norm = self._normalize_model_key(key)
+            m_named = _GEMINI_NAMED_MODEL_RE.match(key_norm)
+            if not m_named:
+                continue
+            suffix = m_named.group(1)
+            if suffix in _GENERIC_GEMINI_SUFFIXES or suffix in seen_suffixes:
+                continue
+            seen_suffixes.add(suffix)
+            named_suffixes.append((suffix, rates))
+        named_suffixes.sort(key=lambda item: len(item[0]), reverse=True)
+
+        for suffix, rates in named_suffixes:
+            if suffix == "hydrogen":
+                continue
+            if re.search(rf"(?<![a-z0-9]){re.escape(suffix)}(?![a-z0-9])", norm):
+                return rates
+        if re.search(r"(?<![a-z0-9])hydrogen(?![a-z0-9])", norm):
             return self.pricing_table.get(
                 "gemini-4-hydrogen", DEFAULT_MODEL_PRICING_PER_1M["gemini-4-hydrogen"]
             )
