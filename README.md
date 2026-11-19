@@ -14,42 +14,12 @@
 
 ---
 
-## v1.3.2 更新（Orchestrator 双阶段适配与 Gemini 4 Neon 费率）
+## 更新日志
 
-- **Orchestrator 双阶段动态适配**：`hud_core/parsers.py` 自动识别 Antigravity Orchestrator 规划模型（`Argon` / `Carbon` / `Neon`）与执行模型（`Hydrogen`）的阶段切换，同步将步级内部标识（`gemini-pro-orchestrator-*` / `gemini-flash-worker-agy`）映射为对应阶段名称并按实际模型分段计费。
-- **Gemini 4 Neon 费率同步**：预设表、`config.example.json` 与 `pricing.remote.json` 新增 `gemini-4-neon`（每百万 Token 输入 `3.00 USD`、缓存 `0.15 USD`、输出与思考 `15.00 USD`），并在 `TokenPricingEngine` 中优先匹配 `neon` / `carbon` / `argon`。
-- **自检用例扩充**：`hud_core/selftest.py` 补充 Orchestrator 双阶段流程及 Neon / Ultra 费率优先级回归断言。
-
----
-
-## v1.3.1 更新（多模型分段计费与模型费率同步）
-
-- **多模型分段计费**：`hud_core/parsers.py` 按模型维度累计 `by_model` 用量，同一会话内切换不同模型时按各片段实际模型分别计费后求和。
-- **模型预设与远端价格表更新**：补充 `gemini-4-carbon` 与 `gemini-4-hydrogen` 默认费率，同步更新 `config.example.json` 与 `pricing.remote.json`。
-- **自检用例覆盖**：`hud_core/selftest.py` 补充多模型分段计费及新增模型费率校验。
-
----
-
-## v1.3 更新（视觉动效与灵动岛）
-
-- **统一动效调度**：`AnimationCoordinator` 用单一 `PreciseTimer` 驱动所有动画，按屏幕刷新率匹配帧间隔，无动画任务或窗口隐藏/最小化时停止计时器。
-- **`QPainter` 直绘**：侧边栏展开/折叠、会话行 Hover、状态灯呼吸与涟漪均直绘实现，不使用高频 `setStyleSheet` 或 `QGraphicsEffect`。
-- **数字平滑滚动与增量徽章**：总 Token、缓存命中率和 2x2 指标平滑滚动；单步新增 Token 时显示 `+xxxk` 徽章并触发对应单元格边框脉冲。
-- **灵动岛折叠态**：点击折叠按钮或双击标题栏，在完整视图（`740×330`）与胶囊态（`260×34`）之间切换；展开前按所在显示器 `availableGeometry` 夹紧坐标，防止越界。
-- **悬停 Peek**：胶囊态下悬停 320ms 弹出 `IslandPeekPopup`，显示当前会话的四维指标与今日费用，移出 200ms 后收回。
-- **运行态流光**：Agent 处于 `running` 时，主卡片与胶囊边框显示顺时针连续流光。
-- **配置**：新增 `enable_animations`（关闭后全部走即时更新）、`window_mode`、`window_x`、`window_y`；窗口形态与坐标在拖拽、切换和退出时保存。
-
----
-
-## v1.2 更新（模块化与计费）
-
-- **模块化**：核心逻辑拆为 `hud_core/` 包，`token_hud.py` 保留为入口并重导出公开符号。
-- **增量读取**：记录每个 JSONL 文件的 `last_byte_offset`，仅解析新增行；文件截断或重写时回退全量重扫。
-- **待机优化**：连续 30 秒无文件修改时轮询退避到 `3000ms`；窗口隐藏或最小化时暂停重绘；跨过 00:00 时在内存中清零 `today_*` 计数，不重读历史文件。
-- **Pricing Engine**：内置 Gemini、Claude、OpenAI、DeepSeek 常用模型的每百万 Token 费率，支持自定义覆盖，在主卡片、标题栏徽章和会话行显示折合费用（USD / CNY）。
-- **托盘与热键**：`QSystemTrayIcon` 托盘菜单；Win32 `RegisterHotKey` 注册全局热键 `Ctrl+Alt+T`。
-- **历史归档与导出**：每日按 Agent 和模型归档到 `~/.gemini/token_hud_history.json`，可导出 CSV。
+- **v1.3.2**：适配 Antigravity Orchestrator 双阶段动态模型与分阶段计费；补充 `Gemini 4 Neon` 费率；默认费率表改由 `pricing.remote.json` 单源加载并支持新元素模型自动匹配。
+- **v1.3.1**：修复多模型切换会话的分段计费；补充 `Gemini 4 Carbon` 与 `Gemini 4 Hydrogen` 费率。
+- **v1.3**：新增动效调度与 `QPainter` 直绘、数值滚动与增量徽章、灵动岛胶囊折叠态（含防越界展开与悬停 Peek 预览）及运行态边框流光。
+- **v1.2**：核心逻辑模块化（`hud_core/`），支持字节偏移增量读取、待机轮询退避、多模型 USD/CNY 折算、托盘菜单、全局热键 `Ctrl+Alt+T` 与 CSV 导出。
 
 ---
 
